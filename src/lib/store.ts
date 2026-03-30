@@ -1,6 +1,6 @@
 import localforage from "localforage";
 import { v4 as uuidv4 } from "uuid";
-import type { AnalysisData, TableFileType, NormalizedTable, TableSession } from "@/lib/session-types";
+import type { TableSession } from "@/lib/session-types";
 import { tableSessionSchema } from "@/lib/analysis-schema";
 
 export interface Message {

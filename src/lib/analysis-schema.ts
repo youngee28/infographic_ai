@@ -12,6 +12,16 @@ export const summaryVariantSchema = z.object({
   lines: z.array(referenceLineSchema).optional(),
 });
 
+export const normalizedTableSchema = z.object({
+  sheetName: z.string().optional(),
+  columns: z.array(z.string()).default([]),
+  rows: z.array(z.array(z.string())).default([]),
+  rowCount: z.number().int().nonnegative(),
+  columnCount: z.number().int().nonnegative(),
+  normalizationNotes: z.array(z.string()).optional(),
+  sourceType: z.enum(["csv", "xlsx"]).optional(),
+});
+
 export const analysisDataSchema = z.object({
   title: z.string().trim().optional(),
   summaries: z.array(summaryVariantSchema).default([]),
@@ -20,6 +30,7 @@ export const analysisDataSchema = z.object({
   issues: z.union([z.string(), z.array(referenceLineSchema)]).default(""),
   infographicPrompt: z.string().optional(),
   tableContext: z.string().optional(),
+  tableData: normalizedTableSchema.optional(),
   status: z.enum(["pending", "complete"]).optional(),
 });
 
@@ -42,16 +53,6 @@ export const annotationSchema = z.object({
   imageOriginBase64: z.string(),
   messages: z.array(messageSchema).default([]),
   createdAt: z.number(),
-});
-
-export const normalizedTableSchema = z.object({
-  sheetName: z.string().optional(),
-  columns: z.array(z.string()).default([]),
-  rows: z.array(z.array(z.string())).default([]),
-  rowCount: z.number().int().nonnegative(),
-  columnCount: z.number().int().nonnegative(),
-  normalizationNotes: z.array(z.string()).optional(),
-  sourceType: z.enum(["csv", "xlsx"]).optional(),
 });
 
 export const tableSessionSchema = z.object({
@@ -101,6 +102,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       : data.issues,
     infographicPrompt: data.infographicPrompt,
     tableContext: data.tableContext,
+    tableData: data.tableData,
     status: data.status,
   };
 }

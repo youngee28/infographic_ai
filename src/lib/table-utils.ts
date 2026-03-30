@@ -10,7 +10,6 @@ export interface TableData {
   normalizationNotes?: string[];
 }
 
-const MAX_PREVIEW_ROWS = 40;
 const ZIP_EOCD_SIGNATURE = 0x06054b50;
 const ZIP_CENTRAL_DIR_SIGNATURE = 0x02014b50;
 const ZIP_LOCAL_FILE_SIGNATURE = 0x04034b50;
@@ -61,11 +60,10 @@ function compactRows(rows: string[][]): string[][] {
 }
 
 function padRow(row: string[], columnCount: number): string[] {
-  const next = [...row];
-  while (next.length < columnCount) {
-    next.push("");
-  }
-  return next.slice(0, columnCount);
+  return Array.from({ length: columnCount }, (_, index) => {
+    const value = row[index];
+    return typeof value === "string" ? value : "";
+  });
 }
 
 function normalizeTable(rawRows: string[][], sourceType: TableSourceType, sheetName?: string): TableData {
