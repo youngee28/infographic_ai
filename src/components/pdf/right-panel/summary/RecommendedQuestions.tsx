@@ -50,9 +50,9 @@ const parseQuestions = (insights?: string): string[] => {
 
 export function RecommendedQuestions({ insights, onSelectQuestion }: Props) {
   const defaultQuestions = [
-    "비용 최적화 구조에 대해 더 설명해줘",
-    "보안 모델의 한계점은 뭐야?",
-    "최종 결론만 3줄 다이제스트해줘"
+    "가장 눈에 띄는 변화나 격차를 설명해줘",
+    "의사결정에 바로 쓸 수 있는 핵심 수치를 골라줘",
+    "이 데이터를 한 장 인포그래픽으로 요약하면 어떻게 구성할까"
   ];
 
   const questions = parseQuestions(insights);

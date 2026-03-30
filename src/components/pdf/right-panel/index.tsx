@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { useAppStore } from "@/lib/app-store";
 import type { AnalysisData } from "@/lib/session-types";
-import { ImageChatPanel } from "./image-chat";
+import { InfographicChatPanel } from "./image-chat/InfographicChatPanel";
 import { RightPanelHeader } from "./RightPanelHeader";
-import { RightPanelTabs } from "./RightPanelTabs";
-import { SummaryPanel } from "./summary";
+import { WorkspaceTabs } from "./WorkspaceTabs";
+import { InsightsPanel } from "./summary/InsightsPanel";
 
 interface RightPanelProps {
   analysisData: AnalysisData | null;
@@ -43,7 +43,7 @@ export function RightPanel({
   return (
     <div className="flex flex-col h-full bg-white relative overflow-hidden">
       <RightPanelHeader fileName={fileName || currentFileName} onShareSession={onShareSession} />
-      <RightPanelTabs
+      <WorkspaceTabs
         activeTab={effectiveTab}
         onChange={setActiveTab}
         showImageTab={showImageTab}
@@ -55,7 +55,7 @@ export function RightPanel({
 
       <div className="flex-1 min-h-0 relative overflow-hidden">
         {effectiveTab === "summary" ? (
-          <SummaryPanel
+          <InsightsPanel
             analysisData={analysisData}
             isAnalyzing={isAnalyzing}
             sessionId={sessionId}
@@ -63,7 +63,7 @@ export function RightPanel({
             sharedChatConfig={sharedChatConfig}
           />
         ) : (
-          <ImageChatPanel sessionId={sessionId} analysisData={analysisData} />
+          <InfographicChatPanel sessionId={sessionId} analysisData={analysisData} />
         )}
       </div>
     </div>
