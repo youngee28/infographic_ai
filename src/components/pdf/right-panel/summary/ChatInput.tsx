@@ -25,7 +25,7 @@ export function ChatInput({ onSend, disabled }: Props) {
             if (e.key === 'Enter') handleSend();
           }}
           disabled={disabled}
-          placeholder="문서 내용에 대해 질문하세요..."
+          placeholder="표 데이터의 패턴, 비교, 해석 포인트를 질문하세요..."
           className="w-full flex-1 bg-transparent border-transparent rounded-xl pl-4 pr-12 py-3 text-[13.5px] outline-none text-gray-800 placeholder-gray-400 disabled:opacity-50"
         />
         <button

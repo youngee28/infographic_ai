@@ -10,7 +10,7 @@ export function Keywords({ keywords }: Props) {
   return (
     <div className="mb-5 animate-in fade-in duration-500 delay-75">
       <div className="text-[12px] font-bold text-gray-500 mb-2 uppercase tracking-tight flex items-center">
-        <Hash className="w-3.5 h-3.5 mr-1" /> 키워드 리스트
+        <Hash className="w-3.5 h-3.5 mr-1" /> 핵심 키워드
       </div>
       <div className="flex flex-wrap gap-1.5">
         {keywords.map((kw, i) => (
