@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Crop, Menu } from 'lucide-r
 import { store, type Annotation } from '@/lib/store';
 import { useAppStore } from '@/lib/app-store';
 import type { AnalysisData } from '@/lib/session-types';
-import { AnnotationTooltip } from './AnnotationTooltip';
+import { LegacyAnnotationTooltip } from './LegacyAnnotationTooltip';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -18,7 +18,7 @@ const documentOptions = {
   standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/standard_fonts/`,
 };
 
-interface PdfViewerProps {
+interface LegacyPdfViewerProps {
   fileUrl: string;
   sessionId?: string | null;
   targetPageNumber?: number;
@@ -27,14 +27,14 @@ interface PdfViewerProps {
   onPageChange?: (page: number) => void;
 }
 
-export function PdfViewer({
+export function LegacyPdfViewer({
   fileUrl,
   sessionId,
   targetPageNumber,
   analysisData,
   onOpenSidebar,
   onPageChange,
-}: PdfViewerProps) {
+}: LegacyPdfViewerProps) {
   const [documentFile, setDocumentFile] = useState<string | { data: Uint8Array } | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
@@ -406,7 +406,7 @@ export function PdfViewer({
 
             {/* Persistent Annotations (Mini Chatbots) */}
             {annotations.filter(a => a.position.pageNumber === pageNumber).map((annot) => (
-               <AnnotationTooltip
+                <LegacyAnnotationTooltip
                  key={annot.id}
                  annotation={annot}
                  analysisData={analysisData}

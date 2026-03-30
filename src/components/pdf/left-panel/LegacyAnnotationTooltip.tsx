@@ -7,7 +7,7 @@ import { GoogleGenAI } from '@google/genai';
 import { type Annotation } from '@/lib/store';
 import type { AnalysisData } from '@/lib/session-types';
 
-interface AnnotationTooltipProps {
+interface LegacyAnnotationTooltipProps {
   annotation: Annotation;
   analysisData?: AnalysisData | null;
   scale: number;
@@ -61,13 +61,13 @@ const isImageGenerationRequest = (text: string) => {
   ].some((pattern) => pattern.test(normalized));
 };
 
-export function AnnotationTooltip({
+export function LegacyAnnotationTooltip({
   annotation,
   analysisData,
   scale,
   onClose,
   onUpdate
-}: AnnotationTooltipProps) {
+}: LegacyAnnotationTooltipProps) {
   const nodeRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ x: annotation.position.x * scale, y: annotation.position.y * scale });
   const [input, setInput] = useState("");

@@ -5,12 +5,12 @@ import { useDropzone } from "react-dropzone";
 import { UploadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-interface PdfUploaderProps {
+interface LegacyTableUploaderProps {
   onFileUpload: (file: File) => void;
   isLoading: boolean;
 }
 
-export function PdfUploader({ onFileUpload, isLoading }: PdfUploaderProps) {
+export function LegacyTableUploader({ onFileUpload, isLoading }: LegacyTableUploaderProps) {
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
       onFileUpload(acceptedFiles[0]);
