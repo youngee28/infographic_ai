@@ -9,7 +9,6 @@ import type { AnalysisData, ReferenceLine, SummaryVariant } from "@/lib/session-
 import {
   buildTableContext,
   getDatasetTitle,
-  getUploadMimeType,
   parseTableFile,
   type TableData,
 } from "@/lib/table-utils";
@@ -427,92 +426,6 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     setPageNumber(page);
   };
 
-  const handleShareSession = async () => {
-    if (!currentSessionId) {
-      alert("공유할 세션이 없습니다.");
-      return;
-    }
-
-    const session = await store.getSession(currentSessionId);
-    if (!session) {
-      alert("세션을 불러오지 못했습니다.");
-      return;
-    }
-
-    const password = window.prompt("공유 페이지 비밀번호를 입력하세요", "");
-    if (!password || !password.trim()) return;
-
-    const limitInput = window.prompt("외부 채팅 제한 횟수(N)를 입력하세요", "20");
-    const chatLimitTotal = Number(limitInput ?? "20");
-    if (!Number.isFinite(chatLimitTotal) || chatLimitTotal < 0) {
-      alert("올바른 채팅 제한 횟수를 입력해주세요.");
-      return;
-    }
-
-    try {
-      const uploadUrlResponse = await fetch("/api/share/upload-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: session.id }),
-      });
-
-      const uploadUrlData = await uploadUrlResponse.json();
-      if (!uploadUrlResponse.ok) {
-        throw new Error(uploadUrlData.error ?? "업로드 URL 생성에 실패했습니다.");
-      }
-
-      const mimeType = getUploadMimeType(session.fileName);
-      if (!session.fileBase64) {
-        throw new Error("공유에 필요한 원본 파일 데이터가 없습니다. 파일을 다시 업로드해주세요.");
-      }
-
-      const tableBlob = await fetch(`data:${mimeType};base64,${session.fileBase64}`).then((res) => res.blob());
-      const uploadResponse = await fetch(uploadUrlData.uploadUrl as string, {
-        method: "PUT",
-        headers: { "Content-Type": mimeType },
-        body: tableBlob,
-      });
-
-      if (!uploadResponse.ok) {
-        throw new Error("공유용 파일 업로드에 실패했습니다.");
-      }
-
-      const response = await fetch("/api/share/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session: {
-            id: session.id,
-            fileName: session.fileName,
-            analysisData: session.analysisData,
-            messages: session.messages,
-            annotations: session.annotations,
-            createdAt: session.createdAt,
-          },
-          pdfS3Key: uploadUrlData.objectKey,
-          password: password.trim(),
-          chatLimitTotal: Math.floor(chatLimitTotal),
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error ?? "공유 링크 생성에 실패했습니다.");
-      }
-
-      const shareUrl = data.shareUrl as string;
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(shareUrl);
-        alert(`공유 링크가 생성되었습니다.\n클립보드에 복사됨:\n${shareUrl}`);
-      } else {
-        alert(`공유 링크가 생성되었습니다:\n${shareUrl}`);
-      }
-    } catch (error) {
-      console.error(error);
-      alert(error instanceof Error ? error.message : "공유 링크 생성 중 오류가 발생했습니다.");
-    }
-  };
-
   const isSessionPage = Boolean(fileUrl && currentSessionId);
   const panelTitle = analysisData?.title?.trim() || currentFileName || "테이블 세션";
 
@@ -623,7 +536,6 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
                   sessionId={currentSessionId}
                   fileName={panelTitle}
                   onCitationClick={handleCitationClick}
-                  onShareSession={handleShareSession}
                 />
               </Panel>
             </PanelGroup>
