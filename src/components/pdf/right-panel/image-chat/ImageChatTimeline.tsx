@@ -14,7 +14,7 @@ export function ImageChatTimeline({ messages, isTyping, onCopyImage }: ImageChat
         <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center border border-gray-100">
           <Sparkles className="w-5 h-5 text-gray-400" />
         </div>
-        <p className="text-[12.5px] font-medium text-center">이미지 편집 요청이나 생성 프롬프트를 입력해보세요.</p>
+        <p className="text-[12.5px] font-medium text-center">핵심 지표, 비교 구조, 원하는 톤을 적어<br/>인포그래픽 시안을 생성해보세요.</p>
       </div>
     );
   }

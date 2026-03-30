@@ -94,7 +94,7 @@ export function ImageChatInput({
             }
           }}
           disabled={disabled}
-          placeholder="예: 체크한 영역을 인포그래픽 스타일로 재생성해줘"
+          placeholder="예: 상위 3개 지표를 강조한 세로형 인포그래픽으로 만들어줘"
           className="w-full flex-1 bg-transparent border-transparent rounded-xl pl-11 pr-12 py-3 text-[13.5px] outline-none text-gray-800 placeholder-gray-400 disabled:opacity-50 resize-none leading-5 max-h-36 overflow-y-auto"
         />
         <button

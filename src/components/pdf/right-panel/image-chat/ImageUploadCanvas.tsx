@@ -18,12 +18,6 @@ export function ImageUploadCanvas({ imageDataUrl, disabled, onClose, onApply }: 
   const [historyIndex, setHistoryIndex] = useState(0);
 
   useEffect(() => {
-    setBaseImageDataUrl(imageDataUrl);
-    setHistory([imageDataUrl]);
-    setHistoryIndex(0);
-  }, [imageDataUrl]);
-
-  useEffect(() => {
     const image = new Image();
     image.onload = () => {
       const canvas = canvasRef.current;
