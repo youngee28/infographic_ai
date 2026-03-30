@@ -1,10 +1,10 @@
 import { AlertTriangle } from "lucide-react";
 
-interface Props {
+interface LegacyIssuesProps {
   issues?: string;
 }
 
-export function Issues({ issues }: Props) {
+export function LegacyIssues({ issues }: LegacyIssuesProps) {
   if (!issues) return null;
 
   return (

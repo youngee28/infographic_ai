@@ -1,6 +1,6 @@
 import { IMAGE_MODELS, QNA_MODELS, type ImageModel, type QnaModel } from "@/lib/ai-models";
 
-interface RightPanelTabsProps {
+interface WorkspaceTabsProps {
   activeTab: "summary" | "image";
   onChange: (tab: "summary" | "image") => void;
   showImageTab?: boolean;
@@ -10,7 +10,7 @@ interface RightPanelTabsProps {
   onChangeImageModel: (model: ImageModel) => void;
 }
 
-export function RightPanelTabs({
+export function WorkspaceTabs({
   activeTab,
   onChange,
   showImageTab = true,
@@ -18,7 +18,7 @@ export function RightPanelTabs({
   selectedImageModel,
   onChangeQnaModel,
   onChangeImageModel,
-}: RightPanelTabsProps) {
+}: WorkspaceTabsProps) {
   return (
     <div className="shrink-0 px-4 pt-3 pb-2 bg-white border-b border-gray-100">
       <div className="flex flex-wrap items-center justify-between gap-2">

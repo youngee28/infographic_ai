@@ -4,14 +4,16 @@ import { useMemo, useRef, useState } from "react";
 import { GoogleGenAI } from "@google/genai";
 import { Pencil, X } from "lucide-react";
 import { useAppStore } from "@/lib/app-store";
+import type { AnalysisData } from "@/lib/session-types";
 import { ImageChatInput } from "./ImageChatInput";
 import { ImageChatTimeline } from "./ImageChatTimeline";
 import { ImageUploadCanvas } from "./ImageUploadCanvas";
 import type { ImageChatMessage } from "./types";
 import { dataUrlToInlineData, looksLikeImageRequest } from "./utils";
 
-interface ImageChatPanelProps {
+interface InfographicChatPanelProps {
   sessionId?: string | null;
+  analysisData?: AnalysisData | null;
 }
 
 const IMAGE_CLASSIFIER_PROMPT =
@@ -29,7 +31,29 @@ interface DraftImage {
 
 const MAX_ATTACHMENTS = 10;
 
-export function ImageChatPanel({ sessionId }: ImageChatPanelProps) {
+const buildInfographicContext = (analysisData?: AnalysisData | null) => {
+  if (!analysisData) return "";
+
+  const summaryLines = analysisData.summaries.flatMap((summary) => summary.lines?.map((line) => line.text) ?? []);
+  const issueLines = Array.isArray(analysisData.issues)
+    ? analysisData.issues.map((issue) => issue.text)
+    : typeof analysisData.issues === "string" && analysisData.issues.trim()
+      ? [analysisData.issues.trim()]
+      : [];
+
+  return [
+    analysisData.title ? `데이터셋 제목: ${analysisData.title}` : "",
+    analysisData.keywords.length > 0 ? `핵심 키워드: ${analysisData.keywords.join(", ")}` : "",
+    summaryLines.length > 0 ? `핵심 인사이트: ${summaryLines.slice(0, 6).join(" | ")}` : "",
+    issueLines.length > 0 ? `주의 포인트: ${issueLines.slice(0, 4).join(" | ")}` : "",
+    analysisData.infographicPrompt ? `기본 인포그래픽 브리프: ${analysisData.infographicPrompt}` : "",
+    analysisData.tableContext ? `테이블 컨텍스트:\n${analysisData.tableContext}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+};
+
+export function InfographicChatPanel({ sessionId, analysisData }: InfographicChatPanelProps) {
   const [isTyping, setIsTyping] = useState(false);
   const [draftImages, setDraftImages] = useState<DraftImage[]>([]);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
@@ -134,9 +158,14 @@ export function ImageChatPanel({ sessionId }: ImageChatPanelProps) {
       }
 
       if (isImageRequest) {
-        const imagePrompt = history
+        const imagePrompt = `${buildInfographicContext(analysisData)}
+
+이전 대화:
+${history
           .map((m) => `[${m.role === "user" ? "사용자" : "AI"}] ${m.content}`)
-          .join("\n\n");
+          .join("\n\n")}
+
+위 테이블 데이터와 대화를 바탕으로 정보 밀도가 높은 인포그래픽 또는 데이터 비주얼을 생성하세요. 제목, 핵심 지표 강조, 비교 구조, 읽는 순서를 반영한 결과를 우선합니다.`;
 
         const imageResult = await ai.models.generateContent({
           model: selectedImageModel,
@@ -155,14 +184,16 @@ export function ImageChatPanel({ sessionId }: ImageChatPanelProps) {
         const aiMessage: ImageChatMessage = {
           role: "ai",
           content: generatedImageDataUrl
-            ? "요청에 맞는 이미지를 생성했습니다."
-            : "이미지를 생성하지 못했습니다. 프롬프트를 조금 더 구체적으로 입력해 주세요.",
+            ? "테이블 인사이트를 바탕으로 인포그래픽 시안을 생성했습니다."
+            : "인포그래픽을 생성하지 못했습니다. 강조할 지표나 레이아웃을 조금 더 구체적으로 입력해 주세요.",
           imageDataUrls: generatedImageDataUrl ? [generatedImageDataUrl] : undefined,
         };
 
         setSessionMessages([...history, aiMessage]);
       } else {
-        const prompt = `이전 대화:\n${history
+        const prompt = `${buildInfographicContext(analysisData)}
+
+이전 대화:\n${history
           .map((m) => `[${m.role === "user" ? "사용자" : "AI"}] ${m.content}`)
           .join("\n\n")}\n\n사용자 최신 요청: ${userContent}`;
 
@@ -171,7 +202,7 @@ export function ImageChatPanel({ sessionId }: ImageChatPanelProps) {
           contents: inlineDataParts.length > 0 ? [prompt, ...inlineDataParts] : [prompt],
           config: {
             systemInstruction:
-              "당신은 이미지 기획/편집을 도와주는 AI 어시스턴트입니다. 사용자의 요청을 한국어로 간결하고 실무적으로 답변하세요.",
+              "당신은 인포그래픽 기획을 도와주는 AI 어시스턴트입니다. 표 인사이트를 시각 구조로 옮기는 방법을 한국어로 간결하고 실무적으로 설명하세요.",
           },
         });
 
@@ -276,6 +307,7 @@ export function ImageChatPanel({ sessionId }: ImageChatPanelProps) {
 
       {isEditorOpen && editingImage && (
         <ImageUploadCanvas
+          key={editingImage.id}
           imageDataUrl={editingImage.dataUrl}
           disabled={isTyping}
           onClose={() => {

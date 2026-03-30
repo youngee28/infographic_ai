@@ -38,7 +38,7 @@ const buildContextText = (analysisData: AnalysisData | null) => {
   ].join("\n").trim();
 };
 
-interface SummaryPanelProps {
+interface InsightsPanelProps {
   analysisData: AnalysisData | null;
   isAnalyzing?: boolean;
   sessionId?: string | null;
@@ -49,7 +49,7 @@ interface SummaryPanelProps {
   };
 }
 
-export function SummaryPanel({ analysisData, isAnalyzing, sessionId, onCitationClick, sharedChatConfig }: SummaryPanelProps) {
+export function InsightsPanel({ analysisData, isAnalyzing, sessionId, onCitationClick, sharedChatConfig }: InsightsPanelProps) {
   const [isTyping, setIsTyping] = useState(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const firstTurnDoneBySessionRef = useRef(false);
@@ -189,7 +189,7 @@ export function SummaryPanel({ analysisData, isAnalyzing, sessionId, onCitationC
     }
   };
 
-  if (isAnalyzing || !analysisData) {
+  if (isAnalyzing || !analysisData || analysisData.status === "pending") {
     return (
       <div className="flex flex-col items-center justify-center h-full bg-white relative overflow-hidden">
         <div className="flex flex-col items-center space-y-4">
