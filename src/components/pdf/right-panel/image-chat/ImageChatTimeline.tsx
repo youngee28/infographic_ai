@@ -2,21 +2,19 @@
 
 import Image from "next/image";
 import { useEffect, useRef } from "react";
-import { Bot, Copy, ImageIcon, LoaderCircle, Sparkles } from "lucide-react";
+import { Bot, ImageIcon, LoaderCircle } from "lucide-react";
 import type { ImageChatMessage } from "./types";
 
 interface ImageChatTimelineProps {
   messages: ImageChatMessage[];
   isGenerating: boolean;
   isPendingAnalysis: boolean;
-  onCopyImage: (imageDataUrl: string) => void;
 }
 
 export function ImageChatTimeline({
   messages,
   isGenerating,
   isPendingAnalysis,
-  onCopyImage,
 }: ImageChatTimelineProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -35,14 +33,21 @@ export function ImageChatTimeline({
               <p className="text-sm font-medium tracking-[-0.01em] text-gray-500">AI가 문서를 분석하고 있습니다...</p>
             </div>
           </div>
+        ) : isGenerating && messages.length === 0 ? (
+          <div className="flex min-h-full w-full items-center justify-center px-4">
+            <div className="flex flex-col items-center space-y-4 text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+              <p className="text-sm font-medium text-gray-500 animate-pulse">AI가 인포그래픽을 생성하고 있습니다...</p>
+            </div>
+          </div>
         ) : messages.length === 0 ? (
           <div className="flex min-h-full flex-col items-center justify-center rounded-[24px] border border-dashed border-gray-200 bg-white/80 px-5 py-10 text-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-gray-200 bg-gray-50 text-gray-500 shadow-inner">
-              <Sparkles className="h-6 w-6" />
+              <LoaderCircle className="h-6 w-6" />
             </div>
-            <p className="mt-4 text-sm font-semibold text-gray-800">첫 인포그래픽을 준비할 수 있습니다.</p>
+            <p className="mt-4 text-sm font-semibold text-gray-800">인포그래픽 생성 준비가 완료되었습니다.</p>
             <p className="mt-2 max-w-md text-[13px] leading-relaxed text-gray-500">
-              강조할 지표, 원하는 톤, 읽는 순서를 입력하면 요청과 결과가 채팅처럼 순서대로 쌓이며 인포그래픽 히스토리를 확인할 수 있습니다.
+              원하는 지표나 표현 방식을 입력하면 바로 첫 인포그래픽을 생성할 수 있습니다.
             </p>
           </div>
         ) : (
@@ -72,10 +77,10 @@ export function ImageChatTimeline({
                     >
                       {message.role === "user" ? (
                         <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed text-white">{message.content}</p>
-                      ) : (
-                        <div className="space-y-3">
-                          {hasImage && imageDataUrl ? (
-                            <div className="space-y-3 p-3 sm:p-4">
+                        ) : (
+                          <div className="space-y-3">
+                            {hasImage && imageDataUrl ? (
+                            <div className="p-3 sm:p-4">
                               <div className="relative overflow-hidden rounded-[20px] border border-gray-200 bg-white shadow-sm">
                                 <Image
                                   src={imageDataUrl}
@@ -85,17 +90,6 @@ export function ImageChatTimeline({
                                   unoptimized
                                   className="h-auto w-full bg-white object-contain"
                                 />
-                              </div>
-
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-[10.5px] font-semibold uppercase tracking-[0.14em] text-gray-400">Generated Visual</span>
-                                <button
-                                  type="button"
-                                  onClick={() => onCopyImage(imageDataUrl)}
-                                  className="inline-flex h-8 items-center gap-1 rounded-full border border-gray-200/80 bg-white px-3 text-[11px] font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:text-gray-900"
-                                >
-                                  <Copy className="h-3.5 w-3.5" /> 복사
-                                </button>
                               </div>
                             </div>
                           ) : (
@@ -107,7 +101,7 @@ export function ImageChatTimeline({
                             </div>
                           )}
 
-                          <div className={`px-4 pb-4 ${hasImage ? "pt-0" : "pt-3"}`}>
+                          <div className={`px-4 pb-4 ${hasImage ? "hidden" : "pt-3"}`}>
                             <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-gray-600">{message.content}</p>
                           </div>
                         </div>

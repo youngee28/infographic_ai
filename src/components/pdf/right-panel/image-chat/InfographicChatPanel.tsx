@@ -348,7 +348,7 @@ ${controlPrompt}
         const aiMessage: ImageChatMessage = {
           role: "ai",
           content: generatedImageDataUrl
-            ? generatedText || "요청한 방향을 반영해 대표 인포그래픽 시안을 갱신했습니다."
+            ? generatedText
             : generatedText || "인포그래픽을 생성하지 못했습니다. 강조할 지표나 레이아웃을 조금 더 구체적으로 입력해 주세요.",
           generatedImageDataUrl,
         };
@@ -434,21 +434,6 @@ ${controlPrompt}
     });
   }, [activePrompt, analysisData?.title, handleGenerate, isGenerating, isPendingAnalysis, messages.length, sessionKey]);
 
-  const handleCopyImage = async (imageDataUrl: string) => {
-    try {
-      if (!navigator.clipboard || typeof ClipboardItem === "undefined") {
-        throw new Error("clipboard unsupported");
-      }
-      const response = await fetch(imageDataUrl);
-      const blob = await response.blob();
-      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
-      showToast("이미지를 복사했습니다", "success");
-    } catch (error) {
-      console.error(error);
-      showToast("이미지 복사에 실패했습니다", "error");
-    }
-  };
-
   return (
     <div className="h-full min-h-0 flex flex-col">
       {toast && (
@@ -470,7 +455,6 @@ ${controlPrompt}
           messages={messages}
           isGenerating={isGenerating}
           isPendingAnalysis={isPendingAnalysis}
-          onCopyImage={handleCopyImage}
         />
       </div>
 
