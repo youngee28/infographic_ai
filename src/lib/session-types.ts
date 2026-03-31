@@ -9,6 +9,16 @@ export interface SummaryVariant {
   lines?: ReferenceLine[];
 }
 
+export type InfographicAspectRatioOption = "portrait" | "square" | "landscape";
+export type InfographicColorToneOption = "clean" | "neutral" | "warm";
+export type InfographicEmphasisOption = "visual" | "balanced" | "text";
+
+export interface InfographicControls {
+  aspectRatio: InfographicAspectRatioOption;
+  colorTone: InfographicColorToneOption;
+  emphasis: InfographicEmphasisOption;
+}
+
 export interface AnalysisData {
   title?: string;
   summaries: SummaryVariant[];
@@ -46,6 +56,12 @@ export interface TableSession {
     citations?: number[];
     generatedImageDataUrl?: string;
   }>;
+  infographicMessages?: Array<{
+    role: "user" | "ai";
+    content: string;
+    generatedImageDataUrl?: string;
+  }>;
+  infographicControls?: InfographicControls;
   annotations?: Array<{
     id: string;
     position: { x: number; y: number; width: number; height: number; pageNumber: number };

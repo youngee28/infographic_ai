@@ -41,6 +41,12 @@ export const messageSchema = z.object({
   generatedImageDataUrl: z.string().optional(),
 });
 
+export const infographicControlsSchema = z.object({
+  aspectRatio: z.enum(["portrait", "square", "landscape"]),
+  colorTone: z.enum(["clean", "neutral", "warm"]),
+  emphasis: z.enum(["visual", "balanced", "text"]),
+});
+
 export const annotationSchema = z.object({
   id: z.string(),
   position: z.object({
@@ -63,6 +69,16 @@ export const tableSessionSchema = z.object({
   tableData: normalizedTableSchema,
   analysisData: analysisDataSchema.nullable(),
   messages: z.array(messageSchema).default([]),
+  infographicMessages: z
+    .array(
+      z.object({
+        role: z.enum(["user", "ai"]),
+        content: z.string(),
+        generatedImageDataUrl: z.string().optional(),
+      })
+    )
+    .optional(),
+  infographicControls: infographicControlsSchema.optional(),
   annotations: z.array(annotationSchema).optional(),
   createdAt: z.number(),
 });
