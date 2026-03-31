@@ -3,6 +3,9 @@ import { Sparkles } from "lucide-react";
 interface Props {
   insights?: string;
   onSelectQuestion: (q: string) => void;
+  label?: string;
+  questions?: string[];
+  defaultQuestions?: string[];
 }
 
 const cleanQuestion = (value: string): string =>
@@ -48,20 +51,25 @@ const parseQuestions = (insights?: string): string[] => {
   return unique;
 };
 
-export function RecommendedQuestions({ insights, onSelectQuestion }: Props) {
-  const defaultQuestions = [
+export function RecommendedQuestions({
+  insights,
+  onSelectQuestion,
+  label = "추천 질문",
+  questions,
+  defaultQuestions = [
     "가장 눈에 띄는 변화나 격차를 설명해줘",
     "의사결정에 바로 쓸 수 있는 핵심 수치를 골라줘",
     "이 데이터를 한 장 인포그래픽으로 요약하면 어떻게 구성할까"
-  ];
+  ],
+}: Props) {
 
-  const questions = parseQuestions(insights);
-  const displayQuestions = questions.length > 0 ? questions : defaultQuestions;
+  const parsedQuestions = parseQuestions(insights);
+  const displayQuestions = questions && questions.length > 0 ? questions : parsedQuestions.length > 0 ? parsedQuestions : defaultQuestions;
 
   return (
     <div className="mb-2 mt-2">
       <div className="flex items-center text-[10.5px] font-bold text-gray-400 mb-2 ml-1 uppercase tracking-wide">
-        <Sparkles className="w-3 h-3 mr-1" /> 추천 질문
+        <Sparkles className="w-3 h-3 mr-1" /> {label}
       </div>
       <div className="flex flex-wrap gap-1.5">
         {displayQuestions.map((q) => (
