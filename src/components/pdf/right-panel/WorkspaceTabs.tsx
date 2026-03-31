@@ -1,8 +1,8 @@
 import { IMAGE_MODELS, QNA_MODELS, type ImageModel, type QnaModel } from "@/lib/ai-models";
 
 interface WorkspaceTabsProps {
-  activeTab: "summary" | "image";
-  onChange: (tab: "summary" | "image") => void;
+  activeTab: "summary" | "layout" | "image";
+  onChange: (tab: "summary" | "layout" | "image") => void;
   showImageTab?: boolean;
   selectedQnaModel: QnaModel;
   selectedImageModel: ImageModel;
@@ -20,6 +20,7 @@ export function WorkspaceTabs({
   onChangeImageModel,
 }: WorkspaceTabsProps) {
   const isImageActive = showImageTab && activeTab === "image";
+  const isSummaryActive = activeTab === "summary";
 
   return (
     <div className="shrink-0 border-b border-gray-200/70 bg-white px-4 py-3">
@@ -39,6 +40,19 @@ export function WorkspaceTabs({
           {showImageTab && (
             <button
               type="button"
+              onClick={() => onChange("layout")}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                activeTab === "layout"
+                  ? "bg-white text-gray-900 shadow-sm shadow-gray-200/80"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              레이아웃
+            </button>
+          )}
+          {showImageTab && (
+            <button
+              type="button"
               onClick={() => onChange("image")}
               className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                 activeTab === "image"
@@ -51,7 +65,7 @@ export function WorkspaceTabs({
           )}
         </div>
 
-        {!isImageActive ? (
+        {isSummaryActive ? (
           <select
             value={selectedQnaModel}
             onChange={(e) => onChangeQnaModel(e.target.value as QnaModel)}
@@ -64,7 +78,7 @@ export function WorkspaceTabs({
               </option>
             ))}
           </select>
-        ) : (
+        ) : isImageActive ? (
           <select
             value={selectedImageModel}
             onChange={(e) => onChangeImageModel(e.target.value as ImageModel)}
@@ -77,6 +91,10 @@ export function WorkspaceTabs({
               </option>
             ))}
           </select>
+        ) : (
+          <div className="inline-flex h-9 items-center rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-500">
+            레이아웃 편집
+          </div>
         )}
       </div>
     </div>

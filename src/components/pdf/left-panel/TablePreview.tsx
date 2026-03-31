@@ -1,6 +1,6 @@
 "use client";
 
-import { FileSpreadsheet, Menu, Sparkles, Table2 } from "lucide-react";
+import { FileSpreadsheet, Menu, Table2 } from "lucide-react";
 import type { SummaryVariant } from "@/lib/session-types";
 import type { TableData } from "@/lib/table-utils";
 
@@ -13,7 +13,7 @@ interface TablePreviewProps {
   onOpenSidebar?: () => void;
 }
 
-export function TablePreview({ fileName, rawFileName, summaries, tableData, isAnalyzing, onOpenSidebar }: TablePreviewProps) {
+export function TablePreview({ fileName, rawFileName, tableData, onOpenSidebar }: TablePreviewProps) {
   if (!tableData) {
     return (
       <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex items-center justify-center p-8">
@@ -30,10 +30,6 @@ export function TablePreview({ fileName, rawFileName, summaries, tableData, isAn
     );
   }
 
-  const primarySummary = getPrimarySummary(summaries);
-  const summaryLines = getSummaryLines(primarySummary);
-  const summaryContent = getSummaryContent(primarySummary);
-  const hasSummary = summaryLines.length > 0 || summaryContent.length > 0;
   const resolvedFileName = fileName?.trim() || "업로드된 테이블";
   const resolvedRawFileName = rawFileName?.trim() || resolvedFileName;
   const metadataFileName = resolvedRawFileName.split(/[\\/]/).pop()?.trim() || resolvedRawFileName;
@@ -63,48 +59,6 @@ export function TablePreview({ fileName, rawFileName, summaries, tableData, isAn
           <div className="min-w-0 max-w-[45%] flex-1 text-right">
             <div className="text-[11px] leading-4 text-gray-400 break-all" title={metadataFileName}>
               {metadataFileName}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="shrink-0 px-4 py-3 bg-gray-50/70 border-b border-gray-200/60">
-        <div className="rounded-xl border border-blue-100/70 bg-linear-to-r from-blue-50/80 via-white to-sky-50/70 px-3.5 py-3 shadow-sm">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-blue-100/80 bg-white text-blue-600 shadow-sm">
-              <Sparkles className="h-4 w-4" />
-            </div>
-
-            <div className="min-w-0 flex-1 space-y-1.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700">AI Summary</p>
-                {primarySummary?.title ? (
-                  <span className="inline-flex items-center rounded-full border border-blue-100 bg-white/90 px-2.5 py-1 text-[11px] font-medium text-blue-700">
-                    {primarySummary.title}
-                  </span>
-                ) : null}
-              </div>
-
-              {hasSummary ? (
-                summaryLines.length > 0 ? (
-                  <ul className="space-y-1.5 text-[12.5px] leading-relaxed text-gray-700">
-                    {summaryLines.map((line, index) => (
-                      <li key={`${line}-${index}`} className="flex gap-2">
-                        <span className="pt-0.5 text-[11px] font-semibold text-blue-600">{index + 1}.</span>
-                        <span className="min-w-0">{line}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="text-[12.5px] leading-relaxed text-gray-700 whitespace-pre-wrap">{summaryContent}</p>
-                )
-              ) : (
-                <p className="text-[12px] leading-relaxed text-gray-500">
-                  {isAnalyzing
-                    ? "AI가 표 핵심 요약을 생성하는 중입니다."
-                    : "아직 생성된 AI 요약이 없습니다. 표 미리보기는 계속 확인할 수 있습니다."}
-                </p>
-              )}
             </div>
           </div>
         </div>
@@ -152,40 +106,4 @@ export function TablePreview({ fileName, rawFileName, summaries, tableData, isAn
       </div>
     </div>
   );
-}
-
-function getPrimarySummary(summaries?: SummaryVariant[] | null): SummaryVariant | null {
-  if (!Array.isArray(summaries) || summaries.length === 0) {
-    return null;
-  }
-
-  const firstSummary = summaries[0];
-  if (hasSummaryBody(firstSummary)) {
-    return firstSummary;
-  }
-
-  return summaries.find(hasSummaryBody) ?? firstSummary ?? null;
-}
-
-function hasSummaryBody(summary?: SummaryVariant | null): boolean {
-  if (!summary) {
-    return false;
-  }
-
-  return getSummaryLines(summary).length > 0 || getSummaryContent(summary).length > 0;
-}
-
-function getSummaryLines(summary?: SummaryVariant | null): string[] {
-  if (!summary || !Array.isArray(summary.lines)) {
-    return [];
-  }
-
-  return summary.lines
-    .map((line) => line.text.trim())
-    .filter(Boolean)
-    .slice(0, 3);
-}
-
-function getSummaryContent(summary?: SummaryVariant | null): string {
-  return summary?.content?.trim() ?? "";
 }

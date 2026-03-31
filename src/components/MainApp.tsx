@@ -4,8 +4,17 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, Menu, Sparkles } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useAppStore } from "@/lib/app-store";
+import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
 import { store, type TableSession } from "@/lib/store";
-import type { AnalysisData, ReferenceLine, SummaryVariant } from "@/lib/session-types";
+import type {
+  AnalysisData,
+  LayoutAspectRatio,
+  LayoutChartType,
+  LayoutPlan,
+  LayoutSectionType,
+  ReferenceLine,
+  SummaryVariant,
+} from "@/lib/session-types";
 import {
   buildTableContext,
   getDatasetTitle,
@@ -77,6 +86,168 @@ function normalizeIssues(value: unknown): string | ReferenceLine[] {
   return value.map(normalizeLine).filter((line): line is ReferenceLine => line !== null);
 }
 
+const LAYOUT_SECTION_TYPES: LayoutSectionType[] = ["header", "chart-group", "kpi-group", "takeaway", "note"];
+const LAYOUT_CHART_TYPES: LayoutChartType[] = ["bar", "line", "donut", "pie", "stacked-bar", "map"];
+const LAYOUT_ASPECT_RATIOS: LayoutAspectRatio[] = ["portrait", "square", "landscape"];
+
+function normalizeNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isLayoutAspectRatio(value: unknown): value is LayoutAspectRatio {
+  return typeof value === "string" && LAYOUT_ASPECT_RATIOS.includes(value as LayoutAspectRatio);
+}
+
+function isLayoutSectionType(value: unknown): value is LayoutSectionType {
+  return typeof value === "string" && LAYOUT_SECTION_TYPES.includes(value as LayoutSectionType);
+}
+
+function isLayoutChartType(value: unknown): value is LayoutChartType {
+  return typeof value === "string" && LAYOUT_CHART_TYPES.includes(value as LayoutChartType);
+}
+
+function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
+  if (!value || typeof value !== "object") return undefined;
+
+  const candidate = value as {
+    layoutType?: unknown;
+    aspectRatio?: unknown;
+    sections?: unknown;
+    visualPolicy?: unknown;
+  };
+
+  const layoutType = candidate.layoutType === "dashboard" ? "dashboard" : undefined;
+  const aspectRatio = isLayoutAspectRatio(candidate.aspectRatio) ? candidate.aspectRatio : undefined;
+
+  if (!layoutType || !aspectRatio) return undefined;
+
+  const sections = Array.isArray(candidate.sections)
+    ? candidate.sections.flatMap((section, index) => {
+        if (!section || typeof section !== "object") return [];
+        const sectionCandidate = section as {
+          id?: unknown;
+          type?: unknown;
+          title?: unknown;
+          charts?: unknown;
+          items?: unknown;
+          note?: unknown;
+        };
+
+        const type = isLayoutSectionType(sectionCandidate.type) ? sectionCandidate.type : undefined;
+
+        if (!type) return [];
+
+        const charts = Array.isArray(sectionCandidate.charts)
+          ? sectionCandidate.charts.flatMap((chart, chartIndex) => {
+              if (!chart || typeof chart !== "object") return [];
+              const chartCandidate = chart as {
+                id?: unknown;
+                chartType?: unknown;
+                title?: unknown;
+                goal?: unknown;
+                dimension?: unknown;
+                metric?: unknown;
+              };
+
+              const chartType = isLayoutChartType(chartCandidate.chartType) ? chartCandidate.chartType : undefined;
+              const title = normalizeNonEmptyString(chartCandidate.title);
+              const goal = normalizeNonEmptyString(chartCandidate.goal);
+
+              if (!chartType || !title || !goal) return [];
+
+              return [
+                {
+                  id: normalizeNonEmptyString(chartCandidate.id) ?? `chart-${index + 1}-${chartIndex + 1}`,
+                  chartType,
+                  title,
+                  goal,
+                  dimension: normalizeNonEmptyString(chartCandidate.dimension),
+                  metric: normalizeNonEmptyString(chartCandidate.metric),
+                },
+              ];
+            })
+          : undefined;
+
+        const items = Array.isArray(sectionCandidate.items)
+          ? sectionCandidate.items.flatMap((item) => {
+              if (!item || typeof item !== "object") return [];
+              const itemCandidate = item as { label?: unknown; value?: unknown };
+              const label = normalizeNonEmptyString(itemCandidate.label);
+              const itemValue = normalizeNonEmptyString(itemCandidate.value);
+              return label && itemValue ? [{ label, value: itemValue }] : [];
+            })
+          : undefined;
+
+        return [
+          {
+            id: normalizeNonEmptyString(sectionCandidate.id) ?? `section-${index + 1}`,
+            type,
+            title: normalizeNonEmptyString(sectionCandidate.title),
+            charts: charts && charts.length > 0 ? charts : undefined,
+            items: items && items.length > 0 ? items : undefined,
+            note: normalizeNonEmptyString(sectionCandidate.note),
+          },
+        ];
+      })
+    : [];
+
+  const visualPolicyCandidate = candidate.visualPolicy as
+    | { textRatio?: unknown; chartRatio?: unknown; iconRatio?: unknown }
+    | undefined;
+
+  const textRatio = typeof visualPolicyCandidate?.textRatio === "number" ? visualPolicyCandidate.textRatio : NaN;
+  const chartRatio = typeof visualPolicyCandidate?.chartRatio === "number" ? visualPolicyCandidate.chartRatio : NaN;
+  const iconRatio = typeof visualPolicyCandidate?.iconRatio === "number" ? visualPolicyCandidate.iconRatio : NaN;
+  const ratioTotal = textRatio + chartRatio + iconRatio;
+  const visualPolicy = Number.isFinite(ratioTotal) && ratioTotal > 0
+    ? {
+        textRatio: textRatio / ratioTotal,
+        chartRatio: chartRatio / ratioTotal,
+        iconRatio: iconRatio / ratioTotal,
+      }
+    : {
+        textRatio: 0.15,
+        chartRatio: 0.75,
+        iconRatio: 0.1,
+      };
+
+  return {
+    id: normalizeNonEmptyString((candidate as { id?: unknown }).id) ?? `layout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    layoutType,
+    aspectRatio,
+    name: normalizeNonEmptyString((candidate as { name?: unknown }).name),
+    description: normalizeNonEmptyString((candidate as { description?: unknown }).description),
+    sections,
+    visualPolicy,
+  };
+}
+
+function normalizeLayoutPlans(value: unknown): LayoutPlan[] | undefined {
+  const candidates = Array.isArray(value) ? value : value ? [value] : [];
+  const plans = candidates
+    .map((candidate) => normalizeLayoutPlan(candidate))
+    .filter((plan): plan is LayoutPlan => plan !== undefined)
+    .map((plan, index) => ({
+      ...plan,
+      id: plan.id || `layout-option-${index + 1}`,
+      name: plan.name || `시안 ${index + 1}`,
+      description: plan.description || `${plan.aspectRatio === "portrait" ? "세로형" : plan.aspectRatio === "landscape" ? "가로형" : "정사각형"} 대시보드 시안`,
+    }));
+
+  return plans.length > 0 ? plans : undefined;
+}
+
+function getSelectedLayoutPlan(
+  layoutPlans: LayoutPlan[] | undefined,
+  selectedLayoutPlanId?: string,
+  fallbackPlan?: LayoutPlan
+): LayoutPlan | undefined {
+  if (layoutPlans && layoutPlans.length > 0) {
+    return layoutPlans.find((plan) => plan.id === selectedLayoutPlanId) ?? layoutPlans[0];
+  }
+  return fallbackPlan;
+}
+
 function createPendingAnalysis(fileName: string, tableData: TableData): AnalysisData {
   return {
     title: getDatasetTitle(fileName),
@@ -84,6 +255,10 @@ function createPendingAnalysis(fileName: string, tableData: TableData): Analysis
     keywords: [],
     insights: "",
     issues: "",
+    generatedLayoutPlans: undefined,
+    selectedLayoutPlanId: undefined,
+    generatedLayoutPlan: undefined,
+    layoutPlan: undefined,
     generatedInfographicPrompt: "",
     infographicPrompt: "",
     tableContext: buildTableContext(tableData),
@@ -104,6 +279,10 @@ function createUnsupportedAnalysis(fileName: string): AnalysisData {
     keywords: ["legacy", "session"],
     insights: "이 세션은 이전 형식으로 저장되어 표 인사이트 워크스페이스에 바로 복원할 수 없습니다.",
     issues: "새 CSV 또는 XLSX 파일로 다시 업로드하면 왼쪽 표 미리보기와 오른쪽 인포그래픽 인터페이스를 사용할 수 있습니다.",
+    generatedLayoutPlans: undefined,
+    selectedLayoutPlanId: undefined,
+    generatedLayoutPlan: undefined,
+    layoutPlan: undefined,
     generatedInfographicPrompt: "",
     infographicPrompt: "",
     status: "complete",
@@ -117,6 +296,13 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
     ...pending,
     ...source,
     title: source.title?.trim() || pending.title,
+    generatedLayoutPlans:
+      source.generatedLayoutPlans ??
+      (source.generatedLayoutPlan ? [source.generatedLayoutPlan] : source.layoutPlan ? [source.layoutPlan] : pending.generatedLayoutPlans),
+    selectedLayoutPlanId:
+      source.selectedLayoutPlanId ?? source.layoutPlan?.id ?? source.generatedLayoutPlan?.id ?? pending.selectedLayoutPlanId,
+    generatedLayoutPlan: source.generatedLayoutPlan ?? source.layoutPlan,
+    layoutPlan: source.layoutPlan ?? source.generatedLayoutPlan,
     generatedInfographicPrompt:
       source.generatedInfographicPrompt?.trim() || source.infographicPrompt?.trim() || pending.generatedInfographicPrompt,
     tableContext: source.tableContext?.trim() || pending.tableContext,
@@ -148,6 +334,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
   const setPendingFile = useAppStore((state) => state.setPendingFile);
   const currentFileName = useAppStore((state) => state.currentFileName);
   const setCurrentFileName = useAppStore((state) => state.setCurrentFileName);
+  const layoutSystemPrompt = useAppStore((state) => state.layoutSystemPrompt);
   const [sessions, setSessions] = useState<TableSession[]>([]);
 
   useEffect(() => {
@@ -302,6 +489,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     setIsAnalyzing(true);
 
     try {
+      const layoutPromptInstruction = layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
       const systemInstruction = `당신은 데이터 분석가이자 인포그래픽 기획자입니다. 제공된 정규화 테이블을 읽고 아래 JSON 구조로만 답변하세요.
 
 {
@@ -330,15 +518,80 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     { "text": "비어있는 값, 이상치, 해석상 주의점", "pages": [] },
     { "text": "추가 확인이 필요한 컬럼 또는 패턴", "pages": [] }
   ],
+  "layoutPlans": [
+    {
+      "id": "layout-option-1",
+      "name": "시안 1",
+      "description": "가장 중요한 비교 차트를 메인으로 배치한 시안",
+      "layoutType": "dashboard",
+      "aspectRatio": "portrait",
+      "sections": [
+        {
+          "id": "header",
+          "type": "header",
+          "title": "상단 제목 영역"
+        },
+        {
+          "id": "main-chart-group",
+          "type": "chart-group",
+          "title": "핵심 비교 차트 영역",
+          "charts": [
+            {
+              "id": "main-chart",
+              "chartType": "bar",
+              "title": "가장 중요한 차트 제목",
+              "goal": "무엇을 비교/설명하는 차트인지",
+              "dimension": "비교 기준 컬럼",
+              "metric": "핵심 수치 컬럼"
+            }
+          ]
+        }
+      ],
+      "visualPolicy": {
+        "textRatio": 0.15,
+        "chartRatio": 0.75,
+        "iconRatio": 0.1
+      }
+    },
+    {
+      "id": "layout-option-2",
+      "name": "시안 2",
+      "description": "KPI 카드와 보조 차트를 섞어 핵심 수치를 먼저 보여주는 시안",
+      "layoutType": "dashboard",
+      "aspectRatio": "portrait",
+      "sections": [],
+      "visualPolicy": {
+        "textRatio": 0.2,
+        "chartRatio": 0.65,
+        "iconRatio": 0.15
+      }
+    },
+    {
+      "id": "layout-option-3",
+      "name": "시안 3",
+      "description": "반복 섹션 구조로 항목별 비교를 연속해서 보여주는 시안",
+      "layoutType": "dashboard",
+      "aspectRatio": "portrait",
+      "sections": [],
+      "visualPolicy": {
+        "textRatio": 0.18,
+        "chartRatio": 0.7,
+        "iconRatio": 0.12
+      }
+    }
+  ],
   "infographicPrompt": "이 데이터를 인포그래픽으로 만들기 위한 구체적인 한국어 프롬프트"
 }
 
-규칙:
+공통 규칙:
 1. summaries[0]은 반드시 3개 line을 채우세요.
 2. 모든 pages는 빈 배열 []로 유지하세요.
 3. insights는 질문만 3줄로 작성하고 번호나 불릿을 붙이지 마세요.
 4. infographicPrompt는 차트 유형, 강조 지표, 시각적 톤을 포함한 실무형 프롬프트로 작성하세요.
-5. 반드시 한국어 JSON만 반환하고 다른 설명은 금지합니다.`;
+5. 반드시 한국어 JSON만 반환하고 다른 설명은 금지합니다.
+
+레이아웃 생성 시스템 프롬프트:
+${layoutPromptInstruction}`;
 
       const payload = {
         systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -377,14 +630,25 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
       }
 
       const parsed = JSON.parse(responseText) as {
-        title?: unknown;
-        summaries?: unknown;
-        keywords?: unknown;
-        insights?: unknown;
-        issues?: unknown;
-        infographicPrompt?: unknown;
-      };
+         title?: unknown;
+         summaries?: unknown;
+         keywords?: unknown;
+         insights?: unknown;
+         issues?: unknown;
+         layoutPlans?: unknown;
+         layoutPlan?: unknown;
+         infographicPrompt?: unknown;
+       };
 
+      const normalizedLayoutPlans =
+        normalizeLayoutPlans(parsed.layoutPlans ?? parsed.layoutPlan) ??
+        baseAnalysis.generatedLayoutPlans ??
+        (baseAnalysis.generatedLayoutPlan ? [baseAnalysis.generatedLayoutPlan] : baseAnalysis.layoutPlan ? [baseAnalysis.layoutPlan] : undefined);
+      const selectedLayoutPlan = getSelectedLayoutPlan(
+        normalizedLayoutPlans,
+        baseAnalysis.selectedLayoutPlanId,
+        baseAnalysis.layoutPlan ?? baseAnalysis.generatedLayoutPlan
+      );
       const generatedInfographicPrompt =
         typeof parsed.infographicPrompt === "string"
           ? parsed.infographicPrompt.trim()
@@ -401,6 +665,10 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
           : [],
         insights: typeof parsed.insights === "string" ? parsed.insights.trim() : "",
         issues: normalizeIssues(parsed.issues),
+        generatedLayoutPlans: normalizedLayoutPlans,
+        selectedLayoutPlanId: selectedLayoutPlan?.id,
+        generatedLayoutPlan: normalizedLayoutPlans?.[0] ?? selectedLayoutPlan,
+        layoutPlan: selectedLayoutPlan,
         generatedInfographicPrompt,
         infographicPrompt: generatedInfographicPrompt,
         tableData: baseAnalysis.tableData,

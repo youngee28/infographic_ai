@@ -12,6 +12,15 @@ import { ImageChatInput } from "./ImageChatInput";
 import { ImageChatTimeline } from "./ImageChatTimeline";
 import type { ImageChatMessage } from "./types";
 
+const getSelectedLayoutPlan = (analysisData?: AnalysisData | null) => {
+  if (!analysisData) return undefined;
+  const candidates = analysisData.generatedLayoutPlans;
+  if (candidates && candidates.length > 0) {
+    return candidates.find((candidate) => candidate.id === analysisData.selectedLayoutPlanId) ?? candidates[0];
+  }
+  return analysisData.layoutPlan ?? analysisData.generatedLayoutPlan;
+};
+
 interface InfographicChatPanelProps {
   sessionId?: string | null;
   analysisData?: AnalysisData | null;
@@ -133,13 +142,39 @@ const buildInfographicContext = (analysisData?: AnalysisData | null, promptOverr
       ? [analysisData.issues.trim()]
       : [];
 
+  const activeLayoutPlan = getSelectedLayoutPlan(analysisData);
+  const layoutPlanContext = activeLayoutPlan
+    ? [
+        `레이아웃 타입: ${activeLayoutPlan.layoutType}`,
+        `레이아웃 비율: ${activeLayoutPlan.aspectRatio}`,
+        `시각 비중 정책: 텍스트 ${Math.round(activeLayoutPlan.visualPolicy.textRatio * 100)}%, 차트 ${Math.round(activeLayoutPlan.visualPolicy.chartRatio * 100)}%, 아이콘 ${Math.round(activeLayoutPlan.visualPolicy.iconRatio * 100)}%`,
+        activeLayoutPlan.sections.length > 0
+          ? `섹션 배치 계획:\n${activeLayoutPlan.sections
+              .map((section, index) => {
+                const chartSummary = section.charts?.length
+                  ? ` / 차트: ${section.charts.map((chart) => `${chart.chartType}(${chart.title})`).join(", ")}`
+                  : "";
+                const itemSummary = section.items?.length ? ` / KPI: ${section.items.map((item) => `${item.label}:${item.value}`).join(", ")}` : "";
+                const noteSummary = section.note ? ` / 메모: ${section.note}` : "";
+                return `${index + 1}. ${section.type}${section.title ? ` - ${section.title}` : ""}${chartSummary}${itemSummary}${noteSummary}`;
+              })
+              .join("\n")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
+
   return [
     analysisData.title ? `데이터셋 제목: ${analysisData.title}` : "",
+    layoutPlanContext ? `확정된 레이아웃 계획:\n${layoutPlanContext}` : "",
     analysisData.keywords.length > 0 ? `핵심 키워드: ${analysisData.keywords.join(", ")}` : "",
     summaryLines.length > 0 ? `핵심 인사이트: ${summaryLines.slice(0, 6).join(" | ")}` : "",
     issueLines.length > 0 ? `주의 포인트: ${issueLines.slice(0, 4).join(" | ")}` : "",
     (promptOverride ?? analysisData.infographicPrompt)?.trim()
-      ? `기본 인포그래픽 브리프: ${(promptOverride ?? analysisData.infographicPrompt)?.trim()}`
+      ? activeLayoutPlan
+        ? `스타일/연출 브리프: ${(promptOverride ?? analysisData.infographicPrompt)?.trim()}`
+        : `기본 인포그래픽 브리프: ${(promptOverride ?? analysisData.infographicPrompt)?.trim()}`
       : "",
     analysisData.tableContext ? `테이블 컨텍스트:\n${analysisData.tableContext}` : "",
   ]
@@ -150,6 +185,16 @@ const buildInfographicContext = (analysisData?: AnalysisData | null, promptOverr
 const buildDerivedPrompt = (analysisData?: AnalysisData | null) => {
   if (!analysisData) {
     return "핵심 수치와 비교 구조가 잘 드러나는 세로형 인포그래픽으로 구성해줘.";
+  }
+
+  const activeLayoutPlan = getSelectedLayoutPlan(analysisData);
+  if (activeLayoutPlan) {
+    const sectionSummary = activeLayoutPlan.sections
+      .map((section) => section.title || section.type)
+      .filter(Boolean)
+      .slice(0, 4)
+      .join(", ");
+    return `${analysisData.title ?? "이 데이터"}를 ${activeLayoutPlan.aspectRatio} 비율의 dashboard 레이아웃으로 구성해줘.${sectionSummary ? ` 섹션은 ${sectionSummary} 중심으로 유지해줘.` : ""} 색감과 분위기는 이후 스타일 요청을 반영하되, 레이아웃 구조와 차트 배치는 유지해줘.`;
   }
 
   const keywordText = analysisData.keywords.slice(0, 3).join(", ");
@@ -306,6 +351,7 @@ export function InfographicChatPanel({ sessionId, analysisData, isAnalyzing }: I
 
         const ai = new GoogleGenAI({ apiKey });
         const controlPrompt = includeControlPrompt ? buildControlPrompt(controls) : "";
+        const hasLayoutPlan = Boolean(getSelectedLayoutPlan(analysisData));
         const imagePrompt = `${buildInfographicContext(analysisData, promptOverride)}
 
 이전 인포그래픽 작업 내역:
@@ -325,7 +371,9 @@ ${controlPrompt}
 
 ` : ""}최신 사용자 요청: ${userContent}
 
-위 테이블 데이터와 작업 내역을 바탕으로 정보 밀도가 높은 인포그래픽 또는 데이터 비주얼을 생성하세요. 제목, 핵심 지표 강조, 비교 구조, 읽는 순서를 반영한 결과를 우선합니다.`;
+${hasLayoutPlan
+          ? "위 확정된 layoutPlan을 최우선으로 따라 인포그래픽을 생성하세요. 섹션 순서, 차트 유형, KPI 블록, 정보 비중 정책은 유지하고, 최신 사용자 요청과 선택 속성은 스타일/강조/세부 연출 조정으로 반영하세요."
+          : "위 테이블 데이터와 작업 내역을 바탕으로 정보 밀도가 높은 인포그래픽 또는 데이터 비주얼을 생성하세요. 제목, 핵심 지표 강조, 비교 구조, 읽는 순서를 반영한 결과를 우선합니다."}`;
 
         const imageResult = await ai.models.generateContent({
           model: selectedImageModel,

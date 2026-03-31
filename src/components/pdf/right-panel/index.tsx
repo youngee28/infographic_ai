@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useAppStore } from "@/lib/app-store";
 import type { AnalysisData } from "@/lib/session-types";
 import { InfographicChatPanel } from "./image-chat/InfographicChatPanel";
+import { LayoutPlanPanel } from "./layout/LayoutPlanPanel";
 import { RightPanelHeader } from "./RightPanelHeader";
 import { InsightsPanel } from "./summary/InsightsPanel";
 import { WorkspaceTabs } from "./WorkspaceTabs";
@@ -37,9 +38,10 @@ export function RightPanel({
   const selectedImageModel = useAppStore((s) => s.selectedImageModel);
   const setSelectedQnaModel = useAppStore((s) => s.setSelectedQnaModel);
   const setSelectedImageModel = useAppStore((s) => s.setSelectedImageModel);
-  const [activeTab, setActiveTab] = useState<"summary" | "image">(() => (showImageTab ? "image" : "summary"));
+  const [activeTab, setActiveTab] = useState<"summary" | "layout" | "image">(() => (showImageTab ? "layout" : "summary"));
   const effectiveActiveTab = showImageTab ? activeTab : "summary";
   const shouldShowInfographicWorkspace = effectiveActiveTab === "image";
+  const shouldShowLayoutWorkspace = effectiveActiveTab === "layout";
 
   return (
     <div className="flex flex-col h-full bg-white relative overflow-hidden">
@@ -47,7 +49,7 @@ export function RightPanel({
       <WorkspaceTabs
         activeTab={effectiveActiveTab}
         onChange={(tab) => {
-          if (tab === "image" && !showImageTab) return;
+          if ((tab === "image" || tab === "layout") && !showImageTab) return;
           setActiveTab(tab);
         }}
         showImageTab={showImageTab}
@@ -60,6 +62,8 @@ export function RightPanel({
       <div className="flex-1 min-h-0 relative overflow-hidden">
         {shouldShowInfographicWorkspace ? (
           <InfographicChatPanel sessionId={sessionId} analysisData={analysisData} isAnalyzing={isAnalyzing} />
+        ) : shouldShowLayoutWorkspace ? (
+          <LayoutPlanPanel sessionId={sessionId} analysisData={analysisData} isAnalyzing={isAnalyzing} />
         ) : (
           <InsightsPanel
             analysisData={analysisData}
