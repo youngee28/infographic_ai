@@ -19,42 +19,44 @@ export function WorkspaceTabs({
   onChangeQnaModel,
   onChangeImageModel,
 }: WorkspaceTabsProps) {
+  const isImageActive = showImageTab && activeTab === "image";
+
   return (
-    <div className="shrink-0 px-4 pt-3 pb-2 bg-white border-b border-gray-100">
+    <div className="shrink-0 border-b border-gray-200/70 bg-white px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="inline-flex items-center rounded-lg bg-gray-100 p-1">
+        <div className="inline-flex items-center rounded-xl border border-gray-200/80 bg-gray-100/80 p-1 shadow-sm shadow-gray-100/80">
           <button
             type="button"
             onClick={() => onChange("summary")}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
               activeTab === "summary"
-                ? "bg-white text-gray-900 shadow-sm"
+                ? "bg-white text-gray-900 shadow-sm shadow-gray-200/80"
                 : "text-gray-500 hover:text-gray-700"
             }`}
           >
-            인사이트
+            요약
           </button>
           {showImageTab && (
             <button
               type="button"
               onClick={() => onChange("image")}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
                 activeTab === "image"
-                  ? "bg-white text-gray-900 shadow-sm"
+                  ? "bg-white text-gray-900 shadow-sm shadow-gray-200/80"
                   : "text-gray-500 hover:text-gray-700"
               }`}
-              >
-                인포그래픽
-              </button>
+            >
+              이미지 생성
+            </button>
           )}
         </div>
 
-        {activeTab === "summary" ? (
+        {!isImageActive ? (
           <select
             value={selectedQnaModel}
             onChange={(e) => onChangeQnaModel(e.target.value as QnaModel)}
-            className="h-8 max-w-[220px] rounded-md border border-gray-200 bg-white px-2 text-xs font-medium text-gray-700 outline-none focus:border-blue-500"
-            aria-label="인사이트 모델 선택"
+            className="h-9 max-w-[220px] rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 outline-none transition-colors focus:border-blue-500"
+            aria-label="요약 모델 선택"
           >
             {QNA_MODELS.map((model) => (
               <option key={model} value={model}>
@@ -66,8 +68,8 @@ export function WorkspaceTabs({
           <select
             value={selectedImageModel}
             onChange={(e) => onChangeImageModel(e.target.value as ImageModel)}
-            className="h-8 max-w-[220px] rounded-md border border-gray-200 bg-white px-2 text-xs font-medium text-gray-700 outline-none focus:border-blue-500"
-            aria-label="인포그래픽 모델 선택"
+            className="h-9 max-w-[220px] rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 outline-none transition-colors focus:border-blue-500"
+            aria-label="이미지 생성 모델 선택"
           >
             {IMAGE_MODELS.map((model) => (
               <option key={model} value={model}>

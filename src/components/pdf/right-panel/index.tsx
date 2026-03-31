@@ -1,10 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { useAppStore } from "@/lib/app-store";
 import type { AnalysisData } from "@/lib/session-types";
 import { InfographicChatPanel } from "./image-chat/InfographicChatPanel";
 import { RightPanelHeader } from "./RightPanelHeader";
 import { InsightsPanel } from "./summary/InsightsPanel";
+import { WorkspaceTabs } from "./WorkspaceTabs";
 
 interface RightPanelProps {
   analysisData: AnalysisData | null;
@@ -31,11 +33,29 @@ export function RightPanel({
   sharedChatConfig,
 }: RightPanelProps) {
   const currentFileName = useAppStore((s) => s.currentFileName);
-  const shouldShowInfographicWorkspace = showImageTab;
+  const selectedQnaModel = useAppStore((s) => s.selectedQnaModel);
+  const selectedImageModel = useAppStore((s) => s.selectedImageModel);
+  const setSelectedQnaModel = useAppStore((s) => s.setSelectedQnaModel);
+  const setSelectedImageModel = useAppStore((s) => s.setSelectedImageModel);
+  const [activeTab, setActiveTab] = useState<"summary" | "image">(() => (showImageTab ? "image" : "summary"));
+  const effectiveActiveTab = showImageTab ? activeTab : "summary";
+  const shouldShowInfographicWorkspace = effectiveActiveTab === "image";
 
   return (
     <div className="flex flex-col h-full bg-white relative overflow-hidden">
       <RightPanelHeader fileName={fileName || currentFileName} onShareSession={onShareSession} />
+      <WorkspaceTabs
+        activeTab={effectiveActiveTab}
+        onChange={(tab) => {
+          if (tab === "image" && !showImageTab) return;
+          setActiveTab(tab);
+        }}
+        showImageTab={showImageTab}
+        selectedQnaModel={selectedQnaModel}
+        selectedImageModel={selectedImageModel}
+        onChangeQnaModel={setSelectedQnaModel}
+        onChangeImageModel={setSelectedImageModel}
+      />
 
       <div className="flex-1 min-h-0 relative overflow-hidden">
         {shouldShowInfographicWorkspace ? (

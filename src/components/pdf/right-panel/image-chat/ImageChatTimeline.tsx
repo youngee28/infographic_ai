@@ -3,15 +3,12 @@
 import Image from "next/image";
 import { useEffect, useRef } from "react";
 import { Bot, Copy, ImageIcon, LoaderCircle, Sparkles } from "lucide-react";
-import { IMAGE_MODELS, type ImageModel } from "@/lib/ai-models";
 import type { ImageChatMessage } from "./types";
 
 interface ImageChatTimelineProps {
   messages: ImageChatMessage[];
   isGenerating: boolean;
   isPendingAnalysis: boolean;
-  selectedImageModel: ImageModel;
-  onSelectImageModel: (model: ImageModel) => void;
   onCopyImage: (imageDataUrl: string) => void;
 }
 
@@ -19,8 +16,6 @@ export function ImageChatTimeline({
   messages,
   isGenerating,
   isPendingAnalysis,
-  selectedImageModel,
-  onSelectImageModel,
   onCopyImage,
 }: ImageChatTimelineProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -31,36 +26,17 @@ export function ImageChatTimeline({
   }, [messages.length, isGenerating]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-gray-200/70 bg-linear-to-br from-gray-50 via-white to-blue-50/50 shadow-sm">
-      <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
-        <label className="inline-flex items-center rounded-full border border-gray-200/80 bg-white/95 pl-2.5 pr-2 shadow-sm backdrop-blur-sm transition-colors hover:border-gray-300">
-          <span className="mr-2 text-[10.5px] font-semibold uppercase tracking-[0.14em] text-gray-400">모델</span>
-          <select
-            value={selectedImageModel}
-            onChange={(e) => onSelectImageModel(e.target.value as ImageModel)}
-            className="h-8 max-w-[190px] bg-transparent pr-1 text-[11px] font-medium text-gray-700 outline-none"
-            aria-label="인포그래픽 모델 선택"
-          >
-            {IMAGE_MODELS.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-        </label>
-
-      </div>
-
-      <div className="flex flex-1 min-h-0 p-5">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="flex flex-1 min-h-0 p-2 md:p-3">
         {isPendingAnalysis && messages.length === 0 ? (
-          <div className="flex min-h-full w-full items-center justify-center px-6">
+          <div className="flex min-h-full w-full items-center justify-center px-4">
             <div className="flex flex-col items-center gap-4 text-center">
               <LoaderCircle className="h-7 w-7 animate-spin text-blue-500" />
               <p className="text-sm font-medium tracking-[-0.01em] text-gray-500">AI가 문서를 분석하고 있습니다...</p>
             </div>
           </div>
         ) : messages.length === 0 ? (
-          <div className="flex min-h-full flex-col items-center justify-center rounded-[24px] border border-dashed border-gray-200 bg-white/80 px-6 py-12 text-center">
+          <div className="flex min-h-full flex-col items-center justify-center rounded-[24px] border border-dashed border-gray-200 bg-white/80 px-5 py-10 text-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-gray-200 bg-gray-50 text-gray-500 shadow-inner">
               <Sparkles className="h-6 w-6" />
             </div>
@@ -71,7 +47,7 @@ export function ImageChatTimeline({
           </div>
         ) : (
           <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto custom-scrollbar pr-1">
-            <div className="space-y-4 pb-1 pt-10">
+            <div className="space-y-4 pb-1 pt-1">
               {messages.map((message, index) => {
                 const imageDataUrl = message.generatedImageDataUrl;
                 const hasImage = Boolean(imageDataUrl);
@@ -146,22 +122,10 @@ export function ImageChatTimeline({
                   <div className="mr-2 mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-blue-200 bg-blue-100">
                     <Bot className="h-4 w-4 text-blue-700" />
                   </div>
-                  <div className="max-w-[88%] rounded-[24px] rounded-tl-sm border border-blue-100 bg-white/90 px-4 py-4 shadow-sm">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-blue-50 text-blue-600 shadow-inner">
-                        <LoaderCircle className="h-4.5 w-4.5 animate-spin" />
-                      </div>
-                      <div>
-                        <p className="text-[13px] font-semibold text-gray-800">인포그래픽을 재구성하고 있습니다.</p>
-                        <p className="mt-1 text-[12.5px] leading-relaxed text-gray-500">
-                          새 시안과 설명을 이 대화 흐름에 이어서 추가하는 중입니다.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <div className="h-24 animate-pulse rounded-2xl border border-gray-200 bg-gray-100/80" />
-                      <div className="h-24 animate-pulse rounded-2xl border border-gray-200 bg-gray-100/80" />
-                    </div>
+                  <div className="inline-flex h-11 items-center space-x-1.5 rounded-[24px] rounded-tl-sm border border-gray-200/80 bg-white/95 px-4 py-3 shadow-sm">
+                    <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: "0ms" }} />
+                    <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: "150ms" }} />
+                    <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400" style={{ animationDelay: "300ms" }} />
                   </div>
                 </div>
               )}

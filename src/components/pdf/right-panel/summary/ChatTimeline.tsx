@@ -21,7 +21,7 @@ export function ChatTimeline({ messages, isTyping, onCitationClick }: Props) {
         <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center border border-gray-100">
           <Sparkles className="w-5 h-5 text-gray-400" />
         </div>
-        <p className="text-[12.5px] font-medium text-center">표에서 보이는 패턴, 이상치, 비교 포인트를<br/>무엇이든 물어보세요!</p>
+        <p className="text-[12.5px] font-medium text-center">표에 대해 궁금한 점을<br/>무엇이든 물어보세요!</p>
       </div>
     );
   }

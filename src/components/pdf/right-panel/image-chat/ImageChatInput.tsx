@@ -37,7 +37,7 @@ export function ImageChatInput({
 
   return (
     <div className={`p-3 bg-white mt-auto sticky bottom-0 z-20 ${showTopBorder ? "border-t border-gray-200" : ""}`}>
-      <div className="flex relative rounded-xl bg-gray-50/50 border border-gray-200 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 transition-all group">
+      <div className="relative flex items-end gap-2 group">
         <textarea
           ref={textareaRef}
           value={input}
@@ -55,13 +55,13 @@ export function ImageChatInput({
           }}
           disabled={disabled}
           placeholder={placeholder}
-          className="w-full flex-1 bg-transparent border-transparent rounded-xl pl-4 pr-12 py-3 text-[13.5px] outline-none text-gray-800 placeholder-gray-400 disabled:opacity-50 resize-none leading-5 max-h-36 overflow-y-auto"
+          className="w-full flex-1 bg-transparent border-0 px-0 py-2 text-[13.5px] outline-none text-gray-800 placeholder-gray-400 disabled:opacity-50 resize-none leading-5 max-h-36 overflow-y-auto"
         />
         <button
           type="button"
           onClick={handleSend}
           disabled={disabled || (!allowEmpty && !input.trim())}
-          className="absolute right-1 top-1 bottom-1 p-2 bg-gray-100/50 text-gray-400 focus-within:text-white focus-within:bg-blue-600 rounded-lg hover:bg-blue-600 hover:text-white transition-all flex items-center justify-center group-focus-within:bg-blue-600 group-focus-within:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+          className="shrink-0 self-end p-2 bg-gray-100/50 text-gray-400 rounded-lg hover:bg-blue-600 hover:text-white transition-all flex items-center justify-center group-focus-within:bg-blue-600 group-focus-within:text-white disabled:opacity-30 disabled:hover:bg-gray-100/50 disabled:hover:text-gray-400"
         >
           <Send className="w-4 h-4 ml-0.5" />
         </button>
