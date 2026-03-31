@@ -496,14 +496,14 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
             <div className="w-full">
               <div className="text-center mb-12">
                 <div className="inline-flex items-center justify-center bg-blue-100/50 text-blue-700 rounded-full px-4 py-1.5 mb-6 text-sm font-semibold tracking-wide border border-blue-200 shadow-sm">
-                  AI 테이블 인사이트 워크스페이스
+                  AI 인포그래픽 생성
                 </div>
                 <h2 className="text-4xl sm:text-5xl font-extrabold text-gray-900 mb-6 tracking-tight leading-tight">
-                  표 데이터를 업로드하고 <br className="hidden sm:block" />
-                  <span className="bg-linear-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">인사이트와 인포그래픽</span>을 한 번에 준비하세요
+                  표 데이터 업로드해서 <br className="hidden sm:block" />
+                  <span className="bg-linear-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">인포그래픽</span>을 만들어보세요
                 </h2>
                 <p className="text-lg text-gray-500 font-medium max-w-3xl mx-auto leading-relaxed">
-                  CSV와 XLSX를 정규화해 왼쪽에는 표 미리보기, 오른쪽에는 핵심 질문과 인포그래픽 생성 인터페이스를 유지한 채 보여줍니다.
+                  복잡한 표 데이터를 정리하고, 시각화 아이디어와 인포그래픽을 바로 확인할 수 있습니다.
                 </p>
               </div>
               <div className="max-w-4xl mx-auto px-4">

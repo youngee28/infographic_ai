@@ -18,6 +18,7 @@ export function LeftPanel({ fileUrl, analysisData, onOpenSidebar }: LeftPanelPro
   return (
     <TablePreview
       fileName={analysisData?.title}
+      summaries={analysisData?.summaries}
       tableData={analysisData?.tableData}
       isAnalyzing={analysisData?.status !== "complete"}
       onOpenSidebar={onOpenSidebar}
