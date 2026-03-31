@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PDF AI Analyzer",
+  title: "AI Insight Visualizer",
   description: "Analyze and chat with your PDF documents",
 };
 

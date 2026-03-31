@@ -6,13 +6,14 @@ import type { TableData } from "@/lib/table-utils";
 
 interface TablePreviewProps {
   fileName?: string;
+  rawFileName?: string;
   summaries?: SummaryVariant[] | null;
   tableData?: TableData;
   isAnalyzing?: boolean;
   onOpenSidebar?: () => void;
 }
 
-export function TablePreview({ fileName, summaries, tableData, isAnalyzing, onOpenSidebar }: TablePreviewProps) {
+export function TablePreview({ fileName, rawFileName, summaries, tableData, isAnalyzing, onOpenSidebar }: TablePreviewProps) {
   if (!tableData) {
     return (
       <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex items-center justify-center p-8">
@@ -34,7 +35,8 @@ export function TablePreview({ fileName, summaries, tableData, isAnalyzing, onOp
   const summaryContent = getSummaryContent(primarySummary);
   const hasSummary = summaryLines.length > 0 || summaryContent.length > 0;
   const resolvedFileName = fileName?.trim() || "업로드된 테이블";
-  const metadataFileName = resolvedFileName.split(/[\\/]/).pop()?.trim() || resolvedFileName;
+  const resolvedRawFileName = rawFileName?.trim() || resolvedFileName;
+  const metadataFileName = resolvedRawFileName.split(/[\\/]/).pop()?.trim() || resolvedRawFileName;
 
   return (
     <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex flex-col relative z-10">
@@ -99,7 +101,7 @@ export function TablePreview({ fileName, summaries, tableData, isAnalyzing, onOp
               ) : (
                 <p className="text-[12px] leading-relaxed text-gray-500">
                   {isAnalyzing
-                    ? "AI가 표 핵심 요약을 생성하는 중입니다. 미리보기 데이터는 먼저 확인할 수 있습니다."
+                    ? "AI가 표 핵심 요약을 생성하는 중입니다."
                     : "아직 생성된 AI 요약이 없습니다. 표 미리보기는 계속 확인할 수 있습니다."}
                 </p>
               )}

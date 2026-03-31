@@ -84,6 +84,7 @@ function createPendingAnalysis(fileName: string, tableData: TableData): Analysis
     keywords: [],
     insights: "",
     issues: "",
+    generatedInfographicPrompt: "",
     infographicPrompt: "",
     tableContext: buildTableContext(tableData),
     tableData,
@@ -103,6 +104,7 @@ function createUnsupportedAnalysis(fileName: string): AnalysisData {
     keywords: ["legacy", "session"],
     insights: "이 세션은 이전 형식으로 저장되어 표 인사이트 워크스페이스에 바로 복원할 수 없습니다.",
     issues: "새 CSV 또는 XLSX 파일로 다시 업로드하면 왼쪽 표 미리보기와 오른쪽 인포그래픽 인터페이스를 사용할 수 있습니다.",
+    generatedInfographicPrompt: "",
     infographicPrompt: "",
     status: "complete",
   };
@@ -115,6 +117,8 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
     ...pending,
     ...source,
     title: source.title?.trim() || pending.title,
+    generatedInfographicPrompt:
+      source.generatedInfographicPrompt?.trim() || source.infographicPrompt?.trim() || pending.generatedInfographicPrompt,
     tableContext: source.tableContext?.trim() || pending.tableContext,
     status: source.status ?? "pending",
   };
@@ -381,6 +385,11 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
         infographicPrompt?: unknown;
       };
 
+      const generatedInfographicPrompt =
+        typeof parsed.infographicPrompt === "string"
+          ? parsed.infographicPrompt.trim()
+          : baseAnalysis.generatedInfographicPrompt ?? baseAnalysis.infographicPrompt ?? "";
+
       const normalizedData: AnalysisData = {
         title:
           typeof parsed.title === "string" && parsed.title.trim()
@@ -392,8 +401,8 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
           : [],
         insights: typeof parsed.insights === "string" ? parsed.insights.trim() : "",
         issues: normalizeIssues(parsed.issues),
-        infographicPrompt:
-          typeof parsed.infographicPrompt === "string" ? parsed.infographicPrompt.trim() : baseAnalysis.infographicPrompt ?? "",
+        generatedInfographicPrompt,
+        infographicPrompt: generatedInfographicPrompt,
         tableData: baseAnalysis.tableData,
         tableContext: baseAnalysis.tableContext,
         status: "complete",
@@ -520,6 +529,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
                   sessionId={currentSessionId}
                   pageNumber={pageNumber}
                   analysisData={analysisData}
+                  rawFileName={currentFileName}
                   onOpenSidebar={isSessionPage ? () => setIsSidebarOpen(true) : undefined}
                   onPageChange={setPageNumber}
                 />

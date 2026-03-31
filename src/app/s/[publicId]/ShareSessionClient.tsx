@@ -91,6 +91,7 @@ export function ShareSessionClient({ publicId }: ShareSessionClientProps) {
             sessionId={sharedSessionId}
             pageNumber={pageNumber}
             analysisData={analysisData}
+            rawFileName={fileName}
             onPageChange={setPageNumber}
           />
         </Panel>

@@ -28,6 +28,7 @@ export const analysisDataSchema = z.object({
   keywords: z.array(z.string()).default([]),
   insights: z.string().default(""),
   issues: z.union([z.string(), z.array(referenceLineSchema)]).default(""),
+  generatedInfographicPrompt: z.string().optional(),
   infographicPrompt: z.string().optional(),
   tableContext: z.string().optional(),
   tableData: normalizedTableSchema.optional(),
@@ -42,9 +43,9 @@ export const messageSchema = z.object({
 });
 
 export const infographicControlsSchema = z.object({
-  aspectRatio: z.enum(["portrait", "square", "landscape"]),
-  colorTone: z.enum(["clean", "neutral", "warm"]),
-  emphasis: z.enum(["visual", "balanced", "text"]),
+  aspectRatio: z.enum(["portrait", "square", "landscape"]).optional(),
+  colorTone: z.enum(["clean", "neutral", "warm"]).optional(),
+  emphasis: z.enum(["visual", "balanced", "text"]).optional(),
 });
 
 export const annotationSchema = z.object({
@@ -94,6 +95,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       keywords: [],
       insights: "",
       issues: "",
+      generatedInfographicPrompt: "",
       infographicPrompt: "",
       tableContext: "",
       status: "pending",
@@ -116,6 +118,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
     issues: Array.isArray(data.issues)
       ? data.issues.map((line) => ({ text: line.text, pages: dedupePages(line.pages) }))
       : data.issues,
+    generatedInfographicPrompt: data.generatedInfographicPrompt,
     infographicPrompt: data.infographicPrompt,
     tableContext: data.tableContext,
     tableData: data.tableData,

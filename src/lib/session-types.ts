@@ -14,9 +14,9 @@ export type InfographicColorToneOption = "clean" | "neutral" | "warm";
 export type InfographicEmphasisOption = "visual" | "balanced" | "text";
 
 export interface InfographicControls {
-  aspectRatio: InfographicAspectRatioOption;
-  colorTone: InfographicColorToneOption;
-  emphasis: InfographicEmphasisOption;
+  aspectRatio?: InfographicAspectRatioOption;
+  colorTone?: InfographicColorToneOption;
+  emphasis?: InfographicEmphasisOption;
 }
 
 export interface AnalysisData {
@@ -25,6 +25,7 @@ export interface AnalysisData {
   keywords: string[];
   insights: string;
   issues: string | ReferenceLine[];
+  generatedInfographicPrompt?: string;
   infographicPrompt?: string;
   tableContext?: string;
   tableData?: NormalizedTable;
