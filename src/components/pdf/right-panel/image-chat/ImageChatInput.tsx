@@ -1,31 +1,26 @@
-import { ImagePlus, Send } from "lucide-react";
+import { Send } from "lucide-react";
 import { useRef, useState } from "react";
 
 interface ImageChatInputProps {
   onSend: (content: string) => void;
-  onPickImage: (file: File) => void;
-  hasAttachment?: boolean;
-  attachmentCount?: number;
-  maxAttachments?: number;
-  canAttachMore?: boolean;
   disabled?: boolean;
+  placeholder?: string;
+  allowEmpty?: boolean;
+  showTopBorder?: boolean;
 }
 
 export function ImageChatInput({
   onSend,
-  onPickImage,
-  hasAttachment,
-  attachmentCount = 0,
-  maxAttachments = 10,
-  canAttachMore = true,
   disabled,
+  placeholder = "예: 상위 3개 지표를 강조한 세로형 인포그래픽으로 만들어줘",
+  allowEmpty = false,
+  showTopBorder = true,
 }: ImageChatInputProps) {
   const [input, setInput] = useState("");
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSend = () => {
-    if ((!input.trim() && !hasAttachment) || disabled) return;
+    if ((!input.trim() && !allowEmpty) || disabled) return;
     onSend(input.trim());
     setInput("");
     if (textareaRef.current) {
@@ -41,29 +36,8 @@ export function ImageChatInput({
   };
 
   return (
-    <div className="p-3 bg-white border-t border-gray-200 mt-auto sticky bottom-0 z-20">
+    <div className={`p-3 bg-white mt-auto sticky bottom-0 z-20 ${showTopBorder ? "border-t border-gray-200" : ""}`}>
       <div className="flex relative rounded-xl bg-gray-50/50 border border-gray-200 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 transition-all group">
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={disabled || !canAttachMore}
-          className="absolute left-1 top-1 bottom-1 px-2 text-gray-400 hover:text-blue-600 rounded-lg transition-colors disabled:opacity-40"
-          title={canAttachMore ? "이미지 첨부" : `최대 ${maxAttachments}개 첨부 가능`}
-        >
-          <ImagePlus className="w-4 h-4" />
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          disabled={disabled || !canAttachMore}
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file && canAttachMore) onPickImage(file);
-            event.currentTarget.value = "";
-          }}
-        />
         <textarea
           ref={textareaRef}
           value={input}
@@ -73,20 +47,6 @@ export function ImageChatInput({
             setInput(next);
             adjustHeight(next);
           }}
-          onPaste={(event) => {
-            const items = event.clipboardData?.items;
-            if (!items) return;
-            for (const item of items) {
-              if (item.type.startsWith("image/")) {
-                const file = item.getAsFile();
-                if (file && canAttachMore) {
-                  onPickImage(file);
-                  event.preventDefault();
-                }
-                break;
-              }
-            }
-          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -94,20 +54,17 @@ export function ImageChatInput({
             }
           }}
           disabled={disabled}
-          placeholder="예: 상위 3개 지표를 강조한 세로형 인포그래픽으로 만들어줘"
-          className="w-full flex-1 bg-transparent border-transparent rounded-xl pl-11 pr-12 py-3 text-[13.5px] outline-none text-gray-800 placeholder-gray-400 disabled:opacity-50 resize-none leading-5 max-h-36 overflow-y-auto"
+          placeholder={placeholder}
+          className="w-full flex-1 bg-transparent border-transparent rounded-xl pl-4 pr-12 py-3 text-[13.5px] outline-none text-gray-800 placeholder-gray-400 disabled:opacity-50 resize-none leading-5 max-h-36 overflow-y-auto"
         />
         <button
           type="button"
           onClick={handleSend}
-          disabled={disabled || (!input.trim() && !hasAttachment)}
+          disabled={disabled || (!allowEmpty && !input.trim())}
           className="absolute right-1 top-1 bottom-1 p-2 bg-gray-100/50 text-gray-400 focus-within:text-white focus-within:bg-blue-600 rounded-lg hover:bg-blue-600 hover:text-white transition-all flex items-center justify-center group-focus-within:bg-blue-600 group-focus-within:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-400"
         >
           <Send className="w-4 h-4 ml-0.5" />
         </button>
-      </div>
-      <div className="mt-2 text-[11px] text-gray-500 text-right">
-        첨부 {attachmentCount}/{maxAttachments}
       </div>
     </div>
   );
