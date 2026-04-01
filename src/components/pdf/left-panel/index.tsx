@@ -1,6 +1,7 @@
 "use client";
 
 import type { AnalysisData } from "@/lib/session-types";
+import type { TableData } from "@/lib/table-utils";
 import { TablePreview } from "./TablePreview";
 
 interface LeftPanelProps {
@@ -8,12 +9,31 @@ interface LeftPanelProps {
   sessionId: string | null;
   pageNumber?: number;
   analysisData?: AnalysisData | null;
+  tableData?: TableData | null;
+  isTableDirty?: boolean;
+  isApplyTableEditsDisabled?: boolean;
+  isResetTableEditsDisabled?: boolean;
   rawFileName?: string;
+  onCellChange?: (rowIndex: number, cellIndex: number, value: string) => void;
+  onResetTableEdits?: () => void;
+  onApplyTableEdits?: () => void;
   onOpenSidebar?: () => void;
   onPageChange?: (page: number) => void;
 }
 
-export function LeftPanel({ fileUrl, analysisData, rawFileName, onOpenSidebar }: LeftPanelProps) {
+export function LeftPanel({
+  fileUrl,
+  analysisData,
+  tableData,
+  isTableDirty,
+  isApplyTableEditsDisabled,
+  isResetTableEditsDisabled,
+  rawFileName,
+  onCellChange,
+  onResetTableEdits,
+  onApplyTableEdits,
+  onOpenSidebar,
+}: LeftPanelProps) {
   if (!fileUrl) return null;
 
   return (
@@ -21,8 +41,14 @@ export function LeftPanel({ fileUrl, analysisData, rawFileName, onOpenSidebar }:
       fileName={analysisData?.title}
       rawFileName={rawFileName}
       summaries={analysisData?.summaries}
-      tableData={analysisData?.tableData}
+      tableData={tableData ?? analysisData?.tableData}
       isAnalyzing={analysisData?.status !== "complete"}
+      isDirty={isTableDirty}
+      isApplyTableEditsDisabled={isApplyTableEditsDisabled}
+      isResetTableEditsDisabled={isResetTableEditsDisabled}
+      onCellChange={onCellChange}
+      onResetTableEdits={onResetTableEdits}
+      onApplyTableEdits={onApplyTableEdits}
       onOpenSidebar={onOpenSidebar}
     />
   );

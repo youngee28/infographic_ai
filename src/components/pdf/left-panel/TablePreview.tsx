@@ -10,10 +10,27 @@ interface TablePreviewProps {
   summaries?: SummaryVariant[] | null;
   tableData?: TableData;
   isAnalyzing?: boolean;
+  isDirty?: boolean;
+  isApplyTableEditsDisabled?: boolean;
+  isResetTableEditsDisabled?: boolean;
+  onCellChange?: (rowIndex: number, cellIndex: number, value: string) => void;
+  onResetTableEdits?: () => void;
+  onApplyTableEdits?: () => void;
   onOpenSidebar?: () => void;
 }
 
-export function TablePreview({ fileName, rawFileName, tableData, onOpenSidebar }: TablePreviewProps) {
+export function TablePreview({
+  fileName,
+  rawFileName,
+  tableData,
+  isDirty,
+  isApplyTableEditsDisabled,
+  isResetTableEditsDisabled,
+  onCellChange,
+  onResetTableEdits,
+  onApplyTableEdits,
+  onOpenSidebar,
+}: TablePreviewProps) {
   if (!tableData) {
     return (
       <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex items-center justify-center p-8">
@@ -33,6 +50,8 @@ export function TablePreview({ fileName, rawFileName, tableData, onOpenSidebar }
   const resolvedFileName = fileName?.trim() || "업로드된 테이블";
   const resolvedRawFileName = rawFileName?.trim() || resolvedFileName;
   const metadataFileName = resolvedRawFileName.split(/[\\/]/).pop()?.trim() || resolvedRawFileName;
+  const isEditable = Boolean(onCellChange);
+  const hasEditControls = Boolean(onResetTableEdits || onApplyTableEdits);
 
   return (
     <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex flex-col relative z-10">
@@ -54,11 +73,41 @@ export function TablePreview({ fileName, rawFileName, tableData, onOpenSidebar }
               <FileSpreadsheet className="w-3.5 h-3.5" /> Table Preview
             </div>
             <h2 className="text-sm font-semibold text-gray-800 truncate mt-1">{resolvedFileName}</h2>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {isEditable && <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-500">보이는 셀만 편집 가능</span>}
+              {isDirty && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700">미적용 변경</span>}
+            </div>
           </div>
 
-          <div className="min-w-0 max-w-[45%] flex-1 text-right">
-            <div className="text-[11px] leading-4 text-gray-400 break-all" title={metadataFileName}>
-              {metadataFileName}
+          <div className="min-w-0 max-w-[45%] flex-1">
+            <div className="flex flex-col items-end gap-3 text-right">
+              <div className="text-[11px] leading-4 text-gray-400 break-all" title={metadataFileName}>
+                {metadataFileName}
+              </div>
+              {hasEditControls && (
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {onResetTableEdits && (
+                    <button
+                      type="button"
+                      onClick={onResetTableEdits}
+                      disabled={isResetTableEditsDisabled}
+                      className="text-xs font-medium rounded-md px-3 py-1.5 border border-gray-200 bg-white text-gray-600 transition-colors hover:bg-gray-50 hover:border-gray-300 disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+                    >
+                      되돌리기
+                    </button>
+                  )}
+                  {onApplyTableEdits && (
+                    <button
+                      type="button"
+                      onClick={onApplyTableEdits}
+                      disabled={isApplyTableEditsDisabled}
+                      className="text-xs font-semibold rounded-md px-3 py-1.5 border border-blue-600 bg-blue-600 text-white transition-colors hover:bg-blue-700 hover:border-blue-700 disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+                    >
+                      변경 적용
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -89,14 +138,29 @@ export function TablePreview({ fileName, rawFileName, tableData, onOpenSidebar }
               ) : (
                 tableData.rows.slice(0, 40).map((row, rowIndex) => (
                   <tr key={`preview-row-${rowIndex}`} className="odd:bg-white even:bg-gray-50/40">
-                    {row.map((cell, cellIndex) => (
+                    {tableData.columns.map((header, cellIndex) => {
+                      const cell = row[cellIndex] ?? "";
+
+                      return (
                       <td
                         key={`preview-cell-${rowIndex}-${cellIndex}`}
                         className="max-w-[240px] border-b border-r last:border-r-0 border-gray-200/60 px-3 py-2.5 text-[12.5px] leading-relaxed text-gray-700 align-top whitespace-pre-wrap break-words"
                       >
-                        {cell || <span className="text-gray-300">—</span>}
+                        {isEditable ? (
+                          <input
+                            type="text"
+                            value={cell}
+                            onChange={(event) => onCellChange?.(rowIndex, cellIndex, event.target.value)}
+                            placeholder="값 없음"
+                            aria-label={`${rowIndex + 1}행 ${header} 편집`}
+                            className="w-full min-w-[120px] rounded-md border border-transparent bg-transparent px-2 py-1.5 text-[12.5px] leading-relaxed text-gray-700 outline-none transition focus:border-blue-200 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300"
+                          />
+                        ) : (
+                          cell || <span className="text-gray-300">—</span>
+                        )}
                       </td>
-                    ))}
+                      );
+                    })}
                   </tr>
                 ))
               )}

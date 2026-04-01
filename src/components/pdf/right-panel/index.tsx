@@ -47,7 +47,10 @@ export function RightPanel({
 
   return (
     <div className="flex flex-col h-full bg-white relative overflow-hidden">
-      <RightPanelHeader fileName={fileName || currentFileName} onShareSession={onShareSession} />
+      <RightPanelHeader
+        fileName={fileName || currentFileName}
+        onShareSession={onShareSession}
+      />
       <WorkspaceTabs
         activeTab={effectiveActiveTab}
         onChange={(tab) => {

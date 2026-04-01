@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Menu, Sparkles } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useAppStore } from "@/lib/app-store";
@@ -322,6 +322,15 @@ function createUnsupportedAnalysis(fileName: string): AnalysisData {
   };
 }
 
+function cloneTableData(tableData: TableData): TableData {
+  return {
+    ...tableData,
+    columns: [...tableData.columns],
+    rows: tableData.rows.map((row) => [...row]),
+    normalizationNotes: tableData.normalizationNotes ? [...tableData.normalizationNotes] : undefined,
+  };
+}
+
 function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData {
   if (!source.tableData) return source;
   const pending = createPendingAnalysis(fileName, source.tableData);
@@ -369,6 +378,23 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
   const setCurrentFileName = useAppStore((state) => state.setCurrentFileName);
   const layoutSystemPrompt = useAppStore((state) => state.layoutSystemPrompt);
   const [sessions, setSessions] = useState<TableSession[]>([]);
+  const [persistedTableData, setPersistedTableData] = useState<TableData | null>(null);
+  const [draftTableData, setDraftTableData] = useState<TableData | null>(null);
+  const currentSessionIdRef = useRef<string | null>(currentSessionId);
+
+  const isTableDirty =
+    draftTableData !== null &&
+    persistedTableData !== null &&
+    JSON.stringify(draftTableData) !== JSON.stringify(persistedTableData);
+
+  const confirmDiscardTableEdits = () => {
+    if (!isTableDirty) return true;
+    return window.confirm("적용하지 않은 표 수정 내용이 사라집니다. 계속하시겠어요?");
+  };
+
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
 
   useEffect(() => {
     void loadSessions().then(() => {
@@ -380,9 +406,17 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     const handlePopState = () => {
       const path = window.location.pathname;
       if (path === "/" || path === "") {
-        handleReset(true);
+        if (!confirmDiscardTableEdits()) {
+          window.history.pushState(null, "", currentSessionIdRef.current ? `/${currentSessionIdRef.current}` : "/");
+          return;
+        }
+        handleReset(true, true);
       } else {
         const id = path.substring(1);
+        if (!confirmDiscardTableEdits()) {
+          window.history.pushState(null, "", currentSessionIdRef.current ? `/${currentSessionIdRef.current}` : "/");
+          return;
+        }
         void handleSelectSession(id, true);
       }
     };
@@ -462,9 +496,15 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     }
   };
 
-  const handleReset = (skipHistory = false) => {
+  const handleReset = (skipHistory = false, skipDirtyCheck = false) => {
+    if (!skipDirtyCheck && !confirmDiscardTableEdits()) {
+      return;
+    }
+
     setFileUrl(null);
     setAnalysisData(null);
+    setPersistedTableData(null);
+    setDraftTableData(null);
     setCurrentSessionId(null);
     setCurrentFileName(undefined);
     setPageNumber(1);
@@ -475,6 +515,10 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
   };
 
   const handleSelectSession = async (id: string, skipHistory = false) => {
+    if (!skipHistory && !confirmDiscardTableEdits()) {
+      return;
+    }
+
     const session = await store.getSession(id);
     if (!session) {
       if (!skipHistory) {
@@ -489,6 +533,8 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     setCurrentSessionId(hydratedSession.id);
     setCurrentFileName(hydratedSession.fileName);
     setAnalysisData(analysis);
+    setPersistedTableData(analysis.tableData ? cloneTableData(analysis.tableData) : null);
+    setDraftTableData(analysis.tableData ? cloneTableData(analysis.tableData) : null);
 
     if (!skipHistory && window.location.pathname !== `/${id}`) {
       window.history.pushState(null, "", `/${id}`);
@@ -507,6 +553,8 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
       layoutPromptOverride?: string;
     }
   ) => {
+    const targetSessionId = session.id;
+    const isTargetSessionActive = () => currentSessionIdRef.current === targetSessionId;
     const apiKey = localStorage.getItem("gemini_api_key");
     if (!apiKey) {
       setIsKeyModalOpen(true);
@@ -518,13 +566,17 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
       : null;
 
     if (!baseAnalysis?.tableData || !baseAnalysis.tableContext) {
-      setAnalysisData(createUnsupportedAnalysis(session.fileName));
-      setIsAnalyzing(false);
+      if (isTargetSessionActive()) {
+        setAnalysisData(createUnsupportedAnalysis(session.fileName));
+        setIsAnalyzing(false);
+      }
       return;
     }
 
-    setAnalysisData(baseAnalysis);
-    setIsAnalyzing(true);
+    if (isTargetSessionActive()) {
+      setAnalysisData(baseAnalysis);
+      setIsAnalyzing(true);
+    }
 
     try {
       const layoutPromptInstruction = options?.layoutPromptOverride?.trim() || layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
@@ -775,16 +827,22 @@ ${layoutPromptInstruction}`;
 
       const updatedSession = { ...session, analysisData: normalizedData };
       await store.saveSession(updatedSession);
-      setAnalysisData(normalizedData);
+      if (isTargetSessionActive()) {
+        setAnalysisData(normalizedData);
+      }
       await loadSessions();
     } catch (error) {
       console.error(error);
-      alert(
-        "테이블 인사이트를 생성하는 중 오류가 발생했습니다: " +
-          (error instanceof Error ? error.message : "API 통신 오류. 키가 올바른지 확인해주세요.")
-      );
+      if (isTargetSessionActive()) {
+        alert(
+          "테이블 인사이트를 생성하는 중 오류가 발생했습니다: " +
+            (error instanceof Error ? error.message : "API 통신 오류. 키가 올바른지 확인해주세요.")
+        );
+      }
     } finally {
-      setIsAnalyzing(false);
+      if (isTargetSessionActive()) {
+        setIsAnalyzing(false);
+      }
     }
   };
 
@@ -811,6 +869,65 @@ ${layoutPromptInstruction}`;
 
   const handleCitationClick = (page: number) => {
     setPageNumber(page);
+  };
+
+  const handleTableCellChange = (rowIndex: number, cellIndex: number, value: string) => {
+    setDraftTableData((currentTableData) => {
+      const sourceTableData = currentTableData ?? (analysisData?.tableData ? cloneTableData(analysisData.tableData) : null);
+
+      if (!sourceTableData) return currentTableData;
+
+      const nextTableData = cloneTableData(sourceTableData);
+      const targetRow = nextTableData.rows[rowIndex];
+      if (!targetRow || cellIndex < 0 || cellIndex >= nextTableData.columnCount) {
+        return currentTableData;
+      }
+
+      targetRow[cellIndex] = value;
+      return nextTableData;
+    });
+  };
+
+  const handleResetTableEdits = () => {
+    setDraftTableData((currentTableData) => {
+      if (!persistedTableData) {
+        return currentTableData;
+      }
+
+      return cloneTableData(persistedTableData);
+    });
+  };
+
+  const handleApplyTableEdits = async () => {
+    if (!currentSessionId || isAnalyzing || !draftTableData || !persistedTableData || !isTableDirty) {
+      return;
+    }
+
+    const session = await store.getSession(currentSessionId);
+    if (!session) return;
+
+    const nextTableData = cloneTableData(draftTableData);
+    const nextAnalysisData: AnalysisData = session.analysisData
+      ? {
+          ...session.analysisData,
+          tableData: nextTableData,
+          tableContext: buildTableContext(nextTableData),
+          status: "pending",
+        }
+      : createPendingAnalysis(session.fileName, nextTableData);
+
+    const updatedSession: TableSession = {
+      ...session,
+      tableData: nextTableData,
+      analysisData: nextAnalysisData,
+    };
+
+    await store.saveSession(updatedSession);
+    setPersistedTableData(cloneTableData(nextTableData));
+    setDraftTableData(cloneTableData(nextTableData));
+    setAnalysisData(nextAnalysisData);
+    await loadSessions();
+    await runAnalysisForSession(updatedSession);
   };
 
   const isSessionPage = Boolean(fileUrl && currentSessionId);
@@ -907,7 +1024,14 @@ ${layoutPromptInstruction}`;
                   sessionId={currentSessionId}
                   pageNumber={pageNumber}
                   analysisData={analysisData}
+                  tableData={draftTableData}
+                  isTableDirty={isTableDirty}
+                  isApplyTableEditsDisabled={!isTableDirty || isAnalyzing}
+                  isResetTableEditsDisabled={!isTableDirty}
                   rawFileName={currentFileName}
+                  onCellChange={handleTableCellChange}
+                  onResetTableEdits={handleResetTableEdits}
+                  onApplyTableEdits={handleApplyTableEdits}
                   onOpenSidebar={isSessionPage ? () => setIsSidebarOpen(true) : undefined}
                   onPageChange={setPageNumber}
                 />
