@@ -42,6 +42,7 @@ export const layoutPlanSchema = z.object({
   aspectRatio: z.enum(["portrait", "square", "landscape"]),
   name: z.string().trim().optional(),
   description: z.string().trim().optional(),
+  previewImageDataUrl: z.string().optional(),
   sections: z.array(layoutSectionSchema).default([]),
   visualPolicy: layoutVisualPolicySchema,
 });

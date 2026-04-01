@@ -106,6 +106,11 @@ function isLayoutChartType(value: unknown): value is LayoutChartType {
   return typeof value === "string" && LAYOUT_CHART_TYPES.includes(value as LayoutChartType);
 }
 
+function normalizeLayoutSectionType(value: unknown): LayoutSectionType | undefined {
+  if (value === "chart") return "chart-group";
+  return isLayoutSectionType(value) ? value : undefined;
+}
+
 function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
   if (!value || typeof value !== "object") return undefined;
 
@@ -133,7 +138,7 @@ function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
           note?: unknown;
         };
 
-        const type = isLayoutSectionType(sectionCandidate.type) ? sectionCandidate.type : undefined;
+        const type = normalizeLayoutSectionType(sectionCandidate.type);
 
         if (!type) return [];
 
@@ -166,6 +171,29 @@ function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
                 },
               ];
             })
+          : type === "chart-group"
+            ? (() => {
+                const chartType = isLayoutChartType((sectionCandidate as { chartType?: unknown }).chartType)
+                  ? (sectionCandidate as { chartType?: LayoutChartType }).chartType
+                  : undefined;
+                const title = normalizeNonEmptyString(sectionCandidate.title);
+                const goal = normalizeNonEmptyString((sectionCandidate as { goal?: unknown }).goal);
+
+                if (!chartType || !title || !goal) {
+                  return undefined;
+                }
+
+                return [
+                  {
+                    id: normalizeNonEmptyString((sectionCandidate as { chartId?: unknown }).chartId) ?? `chart-${index + 1}-1`,
+                    chartType,
+                    title,
+                    goal,
+                    dimension: normalizeNonEmptyString((sectionCandidate as { dimension?: unknown }).dimension),
+                    metric: normalizeNonEmptyString((sectionCandidate as { metric?: unknown }).metric),
+                  },
+                ];
+              })()
           : undefined;
 
         const items = Array.isArray(sectionCandidate.items)
@@ -211,12 +239,17 @@ function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
         iconRatio: 0.1,
       };
 
+  if (sections.length === 0) {
+    return undefined;
+  }
+
   return {
     id: normalizeNonEmptyString((candidate as { id?: unknown }).id) ?? `layout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     layoutType,
     aspectRatio,
     name: normalizeNonEmptyString((candidate as { name?: unknown }).name),
     description: normalizeNonEmptyString((candidate as { description?: unknown }).description),
+    previewImageDataUrl: normalizeNonEmptyString((candidate as { previewImageDataUrl?: unknown }).previewImageDataUrl),
     sections,
     visualPolicy,
   };
@@ -305,7 +338,7 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
     layoutPlan: source.layoutPlan ?? source.generatedLayoutPlan,
     generatedInfographicPrompt:
       source.generatedInfographicPrompt?.trim() || source.infographicPrompt?.trim() || pending.generatedInfographicPrompt,
-    tableContext: source.tableContext?.trim() || pending.tableContext,
+    tableContext: pending.tableContext,
     status: source.status ?? "pending",
   };
 }
@@ -468,7 +501,12 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     }
   };
 
-  const runAnalysisForSession = async (session: TableSession) => {
+  const runAnalysisForSession = async (
+    session: TableSession,
+    options?: {
+      layoutPromptOverride?: string;
+    }
+  ) => {
     const apiKey = localStorage.getItem("gemini_api_key");
     if (!apiKey) {
       setIsKeyModalOpen(true);
@@ -489,7 +527,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     setIsAnalyzing(true);
 
     try {
-      const layoutPromptInstruction = layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
+      const layoutPromptInstruction = options?.layoutPromptOverride?.trim() || layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
       const systemInstruction = `당신은 데이터 분석가이자 인포그래픽 기획자입니다. 제공된 정규화 테이블을 읽고 아래 JSON 구조로만 답변하세요.
 
 {
@@ -559,7 +597,38 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
       "description": "KPI 카드와 보조 차트를 섞어 핵심 수치를 먼저 보여주는 시안",
       "layoutType": "dashboard",
       "aspectRatio": "portrait",
-      "sections": [],
+      "sections": [
+        {
+          "id": "header-2",
+          "type": "header",
+          "title": "핵심 수치 요약 영역"
+        },
+        {
+          "id": "kpi-group-2",
+          "type": "kpi-group",
+          "title": "상단 KPI 카드 영역",
+          "items": [
+            { "label": "대표 지표 1", "value": "원본 수치 기반" },
+            { "label": "대표 지표 2", "value": "원본 수치 기반" },
+            { "label": "대표 지표 3", "value": "원본 수치 기반" }
+          ]
+        },
+        {
+          "id": "support-chart-group-2",
+          "type": "chart-group",
+          "title": "보조 비교 차트 영역",
+          "charts": [
+            {
+              "id": "support-chart-2",
+              "chartType": "line",
+              "title": "추세를 보여주는 보조 차트 제목",
+              "goal": "시간 흐름 또는 순서 변화 설명",
+              "dimension": "구간 또는 범주 컬럼",
+              "metric": "변화량 수치 컬럼"
+            }
+          ]
+        }
+      ],
       "visualPolicy": {
         "textRatio": 0.2,
         "chartRatio": 0.65,
@@ -572,7 +641,34 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
       "description": "반복 섹션 구조로 항목별 비교를 연속해서 보여주는 시안",
       "layoutType": "dashboard",
       "aspectRatio": "portrait",
-      "sections": [],
+      "sections": [
+        {
+          "id": "header-3",
+          "type": "header",
+          "title": "항목별 반복 비교 영역"
+        },
+        {
+          "id": "repeat-chart-group-3",
+          "type": "chart-group",
+          "title": "항목 반복 비교 차트 영역",
+          "charts": [
+            {
+              "id": "repeat-chart-3",
+              "chartType": "stacked-bar",
+              "title": "항목별 구성비 비교 차트 제목",
+              "goal": "항목 간 구성을 동시에 비교",
+              "dimension": "대표 범주 컬럼",
+              "metric": "핵심 합산 수치 컬럼"
+            }
+          ]
+        },
+        {
+          "id": "note-3",
+          "type": "takeaway",
+          "title": "핵심 해석 메모",
+          "note": "차트 아래에 바로 읽히는 해석을 배치"
+        }
+      ],
       "visualPolicy": {
         "textRatio": 0.18,
         "chartRatio": 0.7,
@@ -589,6 +685,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
 3. insights는 질문만 3줄로 작성하고 번호나 불릿을 붙이지 마세요.
 4. infographicPrompt는 차트 유형, 강조 지표, 시각적 톤을 포함한 실무형 프롬프트로 작성하세요.
 5. 반드시 한국어 JSON만 반환하고 다른 설명은 금지합니다.
+6. layoutPlans의 각 시안은 sections를 비워두면 안 되며, 최소 1개의 chart-group과 그 안의 유효한 charts를 포함해야 합니다.
 
 레이아웃 생성 시스템 프롬프트:
 ${layoutPromptInstruction}`;
@@ -689,6 +786,19 @@ ${layoutPromptInstruction}`;
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleRegenerateLayoutCandidates = async (layoutPromptOverride: string) => {
+    if (!currentSessionId) return;
+
+    const session = await store.getSession(currentSessionId);
+    if (!session) return;
+
+    const { session: hydratedSession, analysis } = await hydrateSessionAnalysis(session);
+    await runAnalysisForSession(
+      { ...hydratedSession, analysisData: analysis },
+      { layoutPromptOverride }
+    );
   };
 
   const handleDeleteSession = async (id: string) => {
@@ -813,6 +923,7 @@ ${layoutPromptInstruction}`;
                   isAnalyzing={isAnalyzing}
                   sessionId={currentSessionId}
                   fileName={panelTitle}
+                  onRegenerateLayoutCandidates={handleRegenerateLayoutCandidates}
                   onCitationClick={handleCitationClick}
                 />
               </Panel>

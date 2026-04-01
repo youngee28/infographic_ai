@@ -43,6 +43,7 @@ export interface LayoutPlan {
   aspectRatio: LayoutAspectRatio;
   name?: string;
   description?: string;
+  previewImageDataUrl?: string;
   sections: LayoutSection[];
   visualPolicy: LayoutVisualPolicy;
 }

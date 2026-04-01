@@ -14,6 +14,7 @@ interface RightPanelProps {
   isAnalyzing?: boolean;
   sessionId?: string | null;
   fileName?: string;
+  onRegenerateLayoutCandidates?: (layoutPromptOverride: string) => Promise<void>;
   onCitationClick?: (page: number) => void;
   onShareSession?: () => void;
   showImageTab?: boolean;
@@ -28,6 +29,7 @@ export function RightPanel({
   isAnalyzing,
   sessionId,
   fileName,
+  onRegenerateLayoutCandidates,
   onCitationClick,
   onShareSession,
   showImageTab = true,
@@ -63,7 +65,12 @@ export function RightPanel({
         {shouldShowInfographicWorkspace ? (
           <InfographicChatPanel sessionId={sessionId} analysisData={analysisData} isAnalyzing={isAnalyzing} />
         ) : shouldShowLayoutWorkspace ? (
-          <LayoutPlanPanel sessionId={sessionId} analysisData={analysisData} isAnalyzing={isAnalyzing} />
+          <LayoutPlanPanel
+            sessionId={sessionId}
+            analysisData={analysisData}
+            isAnalyzing={isAnalyzing}
+            onRegenerateLayoutCandidates={onRegenerateLayoutCandidates}
+          />
         ) : (
           <InsightsPanel
             analysisData={analysisData}
