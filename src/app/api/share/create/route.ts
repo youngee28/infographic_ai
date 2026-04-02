@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { normalizeAnalysisData } from "@/lib/analysis-schema";
 import { createSharedSession } from "@/lib/db/share-repository";
 
 const requestSchema = z.object({
@@ -26,6 +27,7 @@ export async function POST(req: Request) {
 
     const { session, pdfS3Key, password, chatLimitTotal } = parsed.data;
     const publicId = randomUUID();
+    const normalizedAnalysisData = session.analysisData ? normalizeAnalysisData(session.analysisData, session.fileName) : null;
 
     await createSharedSession({
       id: randomUUID(),
@@ -34,7 +36,7 @@ export async function POST(req: Request) {
       pdf_s3_key: pdfS3Key,
       payload: {
         fileName: session.fileName,
-        analysisData: session.analysisData,
+        analysisData: normalizedAnalysisData,
         messages: session.messages,
         annotations: session.annotations ?? [],
         createdAt: session.createdAt,

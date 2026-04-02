@@ -1,6 +1,7 @@
 "use client";
 
 import { MessageSquare, Trash2, Plus, X } from "lucide-react";
+import { getAnalysisTitle } from "@/lib/analysis-selectors";
 import type { TableSession } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -63,7 +64,7 @@ export function Sidebar({ isOpen, sessions, currentSessionId, onSelect, onDelete
             </div>
           ) : (
             sessions.map((session) => {
-              const analysisTitle = session.analysisData?.title?.trim();
+              const analysisTitle = getAnalysisTitle(session.analysisData, "").trim();
               const displayTitle = analysisTitle && analysisTitle.length > 0 ? analysisTitle : session.fileName;
 
               return (

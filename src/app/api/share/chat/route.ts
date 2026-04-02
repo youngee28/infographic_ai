@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
+import { normalizeAnalysisData } from "@/lib/analysis-schema";
+import { getAnalysisTitle, getCautions, getDatasetSummary, getFindings, getSourceTables } from "@/lib/analysis-selectors";
 import { consumeChatQuota } from "@/lib/db/share-repository";
 
 dotenv.config({ path: ".env", override: true });
@@ -23,22 +25,19 @@ function resolveGeminiApiKey(): string | null {
 
 function buildSharedContext(payload: Record<string, unknown>): string {
   const fileName = typeof payload.fileName === "string" ? payload.fileName : "공유 문서";
-  const analysisData = payload.analysisData as
-    | {
-        title?: string;
-        summaries?: Array<{ lines?: Array<{ text?: string }> }>;
-        keywords?: string[];
-      }
-    | undefined;
-
-  const title = analysisData?.title || fileName;
-  const summaryLines = analysisData?.summaries?.flatMap((item) => item.lines?.map((line) => line.text ?? "") ?? []) ?? [];
-  const keywords = analysisData?.keywords ?? [];
+  const analysisData = payload.analysisData ? normalizeAnalysisData(payload.analysisData, fileName) : null;
+  const title = getAnalysisTitle(analysisData, fileName);
+  const summary = getDatasetSummary(analysisData);
+  const findings = getFindings(analysisData).map((item) => item.text);
+  const cautions = getCautions(analysisData).map((item) => item.text);
+  const tables = getSourceTables(analysisData);
 
   return [
     `문서 제목: ${title}`,
-    summaryLines.length ? `요약: ${summaryLines.slice(0, 8).join(" | ")}` : "",
-    keywords.length ? `키워드: ${keywords.join(", ")}` : "",
+    summary ? `요약: ${summary}` : "",
+    tables.length ? `표 구성: ${tables.map((table) => `${table.name}(${table.role})`).join(" | ")}` : "",
+    findings.length ? `핵심 신호: ${findings.slice(0, 6).join(" | ")}` : "",
+    cautions.length ? `주의 포인트: ${cautions.slice(0, 4).join(" | ")}` : "",
   ]
     .filter(Boolean)
     .join("\n");

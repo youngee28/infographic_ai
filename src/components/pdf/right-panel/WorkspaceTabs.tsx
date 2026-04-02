@@ -1,12 +1,14 @@
-import { IMAGE_MODELS, QNA_MODELS, type ImageModel, type QnaModel } from "@/lib/ai-models";
+import { IMAGE_MODELS, LAYOUT_MODELS, QNA_MODELS, type ImageModel, type LayoutModel, type QnaModel } from "@/lib/ai-models";
 
 interface WorkspaceTabsProps {
   activeTab: "summary" | "layout" | "image";
   onChange: (tab: "summary" | "layout" | "image") => void;
   showImageTab?: boolean;
   selectedQnaModel: QnaModel;
+  selectedLayoutModel: LayoutModel;
   selectedImageModel: ImageModel;
   onChangeQnaModel: (model: QnaModel) => void;
+  onChangeLayoutModel: (model: LayoutModel) => void;
   onChangeImageModel: (model: ImageModel) => void;
 }
 
@@ -15,12 +17,15 @@ export function WorkspaceTabs({
   onChange,
   showImageTab = true,
   selectedQnaModel,
+  selectedLayoutModel,
   selectedImageModel,
   onChangeQnaModel,
+  onChangeLayoutModel,
   onChangeImageModel,
 }: WorkspaceTabsProps) {
   const isImageActive = showImageTab && activeTab === "image";
   const isSummaryActive = activeTab === "summary";
+  const isLayoutActive = showImageTab && activeTab === "layout";
 
   return (
     <div className="shrink-0 border-b border-gray-200/70 bg-white px-4 py-3">
@@ -78,6 +83,19 @@ export function WorkspaceTabs({
               </option>
             ))}
           </select>
+        ) : isLayoutActive ? (
+          <select
+            value={selectedLayoutModel}
+            onChange={(e) => onChangeLayoutModel(e.target.value as LayoutModel)}
+            className="h-9 max-w-[220px] rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 outline-none transition-colors focus:border-blue-500"
+            aria-label="레이아웃 생성 모델 선택"
+          >
+            {LAYOUT_MODELS.map((model) => (
+              <option key={model} value={model}>
+                {model}
+              </option>
+            ))}
+          </select>
         ) : isImageActive ? (
           <select
             value={selectedImageModel}
@@ -91,11 +109,7 @@ export function WorkspaceTabs({
               </option>
             ))}
           </select>
-        ) : (
-          <div className="inline-flex h-9 items-center rounded-lg border border-gray-200 bg-gray-50 px-3 text-xs font-medium text-gray-500">
-            레이아웃 편집
-          </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

@@ -1,3 +1,5 @@
+import type { LogicalTable, LogicalTableHeaderAxis, LogicalTableOrientation } from "@/lib/session-types";
+
 export type TableSourceType = "csv" | "xlsx";
 
 export interface TableData {
@@ -8,7 +10,28 @@ export interface TableData {
   sourceType?: TableSourceType;
   sheetName?: string;
   normalizationNotes?: string[];
+  logicalTables?: LogicalTable[];
+  primaryLogicalTableId?: string;
 }
+
+interface ParseTableOptions {
+  apiKey?: string;
+}
+
+interface GeminiTableRangeProposal {
+  id?: string;
+  startRow: number;
+  endRow: number;
+  startCol: number;
+  endCol: number;
+  headerAxis?: LogicalTableHeaderAxis;
+  orientation?: LogicalTableOrientation;
+  confidence?: number;
+  title?: string;
+  reason?: string;
+}
+
+const GEMINI_TABLE_RANGE_MODEL = "gemini-2.5-flash";
 
 const ZIP_EOCD_SIGNATURE = 0x06054b50;
 const ZIP_CENTRAL_DIR_SIGNATURE = 0x02014b50;
@@ -66,6 +89,99 @@ function padRow(row: string[], columnCount: number): string[] {
   });
 }
 
+function transposeRows(rows: string[][]): string[][] {
+  const rowCount = rows.length;
+  const columnCount = Math.max(0, ...rows.map((row) => row.length));
+  return Array.from({ length: columnCount }, (_, columnIndex) =>
+    Array.from({ length: rowCount }, (_, rowIndex) => rows[rowIndex]?.[columnIndex] ?? "")
+  );
+}
+
+function isRowBlank(row: string[]): boolean {
+  return row.every((cell) => trimCell(cell).length === 0);
+}
+
+function isColumnBlank(rows: string[][], columnIndex: number): boolean {
+  return rows.every((row) => trimCell(row[columnIndex] ?? "").length === 0);
+}
+
+function trimEmptyBorders(rows: string[][]): { rows: string[][]; startRowOffset: number; startColOffset: number } {
+  let top = 0;
+  let bottom = rows.length - 1;
+
+  while (top <= bottom && isRowBlank(rows[top] ?? [])) top += 1;
+  while (bottom >= top && isRowBlank(rows[bottom] ?? [])) bottom -= 1;
+
+  if (top > bottom) {
+    return { rows: [], startRowOffset: 0, startColOffset: 0 };
+  }
+
+  const slicedRows = rows.slice(top, bottom + 1);
+  const width = Math.max(0, ...slicedRows.map((row) => row.length));
+  let left = 0;
+  let right = width - 1;
+
+  while (left <= right && isColumnBlank(slicedRows, left)) left += 1;
+  while (right >= left && isColumnBlank(slicedRows, right)) right -= 1;
+
+  if (left > right) {
+    return { rows: [], startRowOffset: 0, startColOffset: 0 };
+  }
+
+  return {
+    rows: slicedRows.map((row) => row.slice(left, right + 1)),
+    startRowOffset: top,
+    startColOffset: left,
+  };
+}
+
+function splitRowBands(rows: string[][]): Array<{ start: number; end: number }> {
+  const bands: Array<{ start: number; end: number }> = [];
+  let start = -1;
+
+  rows.forEach((row, index) => {
+    if (isRowBlank(row)) {
+      if (start >= 0) {
+        bands.push({ start, end: index - 1 });
+        start = -1;
+      }
+      return;
+    }
+
+    if (start < 0) start = index;
+  });
+
+  if (start >= 0) {
+    bands.push({ start, end: rows.length - 1 });
+  }
+
+  return bands;
+}
+
+function splitColumnBands(rows: string[][]): Array<{ start: number; end: number }> {
+  const width = Math.max(0, ...rows.map((row) => row.length));
+  const bands: Array<{ start: number; end: number }> = [];
+  let start = -1;
+
+  for (let columnIndex = 0; columnIndex < width; columnIndex += 1) {
+    if (isColumnBlank(rows, columnIndex)) {
+      if (start >= 0) {
+        bands.push({ start, end: columnIndex - 1 });
+        start = -1;
+      }
+      continue;
+    }
+
+    if (start < 0) start = columnIndex;
+  }
+
+  if (start >= 0) {
+    bands.push({ start, end: width - 1 });
+  }
+
+  return bands;
+}
+
 function normalizeTable(rawRows: string[][], sourceType: TableSourceType, sheetName?: string): TableData {
   const cleanedRows = compactRows(rawRows);
   const headerSource = cleanedRows[0] ?? [];
@@ -97,6 +213,377 @@ function normalizeTable(rawRows: string[][], sourceType: TableSourceType, sheetN
     sheetName,
     normalizationNotes,
   };
+}
+
+function scoreNormalizedTable(table: TableData): number {
+  if (table.columns.length === 0 || table.rows.length === 0) return Number.NEGATIVE_INFINITY;
+
+  const profiles = profileColumns(table.columns, table.rows);
+  const metricCandidates = rankMetricCandidates(profiles);
+  const dimensionCandidates = rankDimensionCandidates(profiles);
+  const headerValues = table.columns.map((header) => header.trim());
+  const defaultHeaderCount = headerValues.filter((header, index) => header === getDefaultHeader(index)).length;
+  const nonEmptyHeaderCount = headerValues.filter(Boolean).length;
+  const uniqueHeaderCount = new Set(headerValues.filter(Boolean)).size;
+  const metricScore = metricCandidates.reduce((sum, item) => sum + item.score, 0);
+  const dimensionScore = dimensionCandidates.reduce((sum, item) => sum + item.score, 0);
+  const textLikeHeaders = headerValues.filter((header) => /[A-Za-z가-힣]/.test(header)).length;
+
+  return (
+    metricScore * 0.8 +
+    dimensionScore * 0.6 +
+    nonEmptyHeaderCount * 3 +
+    uniqueHeaderCount * 2 +
+    textLikeHeaders * 2 -
+    defaultHeaderCount * 8
+  );
+}
+
+function normalizeLogicalTable(
+  rawRows: string[][],
+  sourceType: TableSourceType,
+  id: string,
+  bounds: { startRow: number; endRow: number; startCol: number; endCol: number },
+  sheetName?: string
+): LogicalTable | null {
+  const rowMajorTable = normalizeTable(rawRows, sourceType, sheetName);
+  const columnMajorTable = normalizeTable(transposeRows(rawRows), sourceType, sheetName);
+  const rowMajorScore = scoreNormalizedTable(rowMajorTable);
+  const columnMajorScore = scoreNormalizedTable(columnMajorTable);
+  const scoreGap = rowMajorScore - columnMajorScore;
+  const normalized = scoreGap >= -6 ? rowMajorTable : columnMajorTable;
+  const orientation: LogicalTableOrientation = Math.abs(scoreGap) <= 6 ? "ambiguous" : scoreGap > 0 ? "row-major" : "column-major";
+  const headerAxis: LogicalTableHeaderAxis = orientation === "column-major" ? "column" : orientation === "row-major" ? "row" : "ambiguous";
+  const confidence = Math.min(1, Math.max(0.2, Math.abs(scoreGap) / 40));
+  const name = normalized.columns[0]?.trim() || `${sheetName?.trim() || "표"} ${id.replace(/^table-/, "")}`;
+
+  if (normalized.columnCount < 2 || normalized.rowCount < 1) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    source: "detected",
+    orientation,
+    headerAxis,
+    confidence,
+    startRow: bounds.startRow,
+    endRow: bounds.endRow,
+    startCol: bounds.startCol,
+    endCol: bounds.endCol,
+    columns: normalized.columns,
+    rows: normalized.rows,
+    rowCount: normalized.rowCount,
+    columnCount: normalized.columnCount,
+    normalizationNotes: normalized.normalizationNotes,
+  };
+}
+
+function detectLogicalTables(rawRows: string[][], sourceType: TableSourceType, sheetName?: string): LogicalTable[] {
+  const rowBands = splitRowBands(rawRows);
+  const logicalTables: LogicalTable[] = [];
+
+  rowBands.forEach((rowBand) => {
+    const bandRows = rawRows.slice(rowBand.start, rowBand.end + 1);
+    const columnBands = splitColumnBands(bandRows);
+    columnBands.forEach((columnBand) => {
+      const candidateRows = bandRows.map((row) => row.slice(columnBand.start, columnBand.end + 1));
+      const trimmed = trimEmptyBorders(candidateRows);
+      if (trimmed.rows.length < 2) return;
+      const width = Math.max(0, ...trimmed.rows.map((row) => row.length));
+      if (width < 2) return;
+
+      const table = normalizeLogicalTable(
+        trimmed.rows,
+        sourceType,
+        `table-${logicalTables.length + 1}`,
+        {
+          startRow: rowBand.start + trimmed.startRowOffset + 1,
+          endRow: rowBand.start + trimmed.startRowOffset + trimmed.rows.length,
+          startCol: columnBand.start + trimmed.startColOffset + 1,
+          endCol: columnBand.start + trimmed.startColOffset + width,
+        },
+        sheetName
+      );
+
+      if (table) {
+        logicalTables.push(table);
+      }
+    });
+  });
+
+  if (logicalTables.length > 0) {
+    return [...logicalTables].sort((left, right) => right.confidence - left.confidence || (right.rowCount * right.columnCount) - (left.rowCount * left.columnCount));
+  }
+
+  const fallback = normalizeLogicalTable(rawRows, sourceType, "table-1", { startRow: 1, endRow: rawRows.length, startCol: 1, endCol: Math.max(1, ...rawRows.map((row) => row.length)) }, sheetName);
+  return fallback ? [fallback] : [];
+}
+
+function buildNormalizedTableFromLogicalTables(logicalTables: LogicalTable[], sourceType: TableSourceType, sheetName?: string): TableData {
+  const rankedTables = [...logicalTables].sort((left, right) => right.confidence - left.confidence || (right.rowCount * right.columnCount) - (left.rowCount * left.columnCount));
+  const primary = rankedTables[0];
+  if (!primary) {
+    return normalizeTable([], sourceType, sheetName);
+  }
+
+  return {
+    columns: primary.columns,
+    rows: primary.rows,
+    rowCount: primary.rowCount,
+    columnCount: primary.columnCount,
+    sourceType,
+    sheetName,
+    normalizationNotes: primary.normalizationNotes,
+    logicalTables: rankedTables,
+    primaryLogicalTableId: primary.id,
+  };
+}
+
+function buildGridPreview(rawRows: string[][], maxRows = 120, maxCols = 20): string {
+  const rowCount = rawRows.length;
+  const columnCount = Math.max(0, ...rawRows.map((row) => row.length));
+  const visibleRows = rawRows.slice(0, maxRows).map((row, rowIndex) => {
+    const cells = Array.from({ length: Math.min(columnCount, maxCols) }, (_, columnIndex) => {
+      const value = trimCell(row[columnIndex] ?? "");
+      return `C${columnIndex + 1}=${value || "∅"}`;
+    });
+    return `R${rowIndex + 1}: ${cells.join(" | ")}`;
+  });
+
+  return [
+    `[GRID_META] rows=${rowCount} cols=${columnCount}`,
+    `[GRID_ROWS]`,
+    ...visibleRows,
+  ].join("\n");
+}
+
+function shouldInvokeGeminiFallback(logicalTables: LogicalTable[], rawRows: string[][]): boolean {
+  const primary = logicalTables[0];
+  if (!primary) return rawRows.length > 0;
+
+  const totalRows = rawRows.length;
+  const totalCols = Math.max(0, ...rawRows.map((row) => row.length));
+  const totalArea = Math.max(totalRows * Math.max(totalCols, 1), 1);
+  const primaryArea = primary.rowCount * primary.columnCount;
+  const dominantButWeak = primaryArea / totalArea > 0.75 && primary.confidence < 0.75;
+
+  return primary.orientation === "ambiguous" || primary.confidence < 0.55 || dominantButWeak;
+}
+
+function parseGeminiRangeResponse(input: string): GeminiTableRangeProposal[] {
+  const parsed = JSON.parse(input) as { tables?: unknown };
+  if (!parsed || !Array.isArray(parsed.tables)) return [];
+
+  return parsed.tables.flatMap((table) => {
+    if (!table || typeof table !== "object") return [];
+    const candidate = table as Record<string, unknown>;
+    const startRow = Number(candidate.startRow);
+    const endRow = Number(candidate.endRow);
+    const startCol = Number(candidate.startCol);
+    const endCol = Number(candidate.endCol);
+    const headerAxis = candidate.headerAxis;
+    const orientation = candidate.orientation;
+    const confidence = Number(candidate.confidence);
+
+    if (![startRow, endRow, startCol, endCol].every((value) => Number.isInteger(value) && value > 0)) {
+      return [];
+    }
+
+    return [{
+      id: typeof candidate.id === "string" ? candidate.id : undefined,
+      startRow,
+      endRow,
+      startCol,
+      endCol,
+      headerAxis: headerAxis === "row" || headerAxis === "column" || headerAxis === "ambiguous" ? headerAxis : undefined,
+      orientation: orientation === "row-major" || orientation === "column-major" || orientation === "ambiguous" ? orientation : undefined,
+      confidence: Number.isFinite(confidence) ? confidence : undefined,
+      title: typeof candidate.title === "string" ? candidate.title.trim() : undefined,
+      reason: typeof candidate.reason === "string" ? candidate.reason.trim() : undefined,
+    }];
+  });
+}
+
+function validateGeminiRangeProposal(proposal: GeminiTableRangeProposal, rawRows: string[][]): boolean {
+  const maxRow = rawRows.length;
+  const maxCol = Math.max(0, ...rawRows.map((row) => row.length));
+  if (proposal.startRow > proposal.endRow || proposal.startCol > proposal.endCol) return false;
+  if (proposal.endRow > maxRow || proposal.endCol > maxCol) return false;
+
+  const sliced = rawRows
+    .slice(proposal.startRow - 1, proposal.endRow)
+    .map((row) => row.slice(proposal.startCol - 1, proposal.endCol));
+  const trimmed = trimEmptyBorders(sliced);
+  const width = Math.max(0, ...trimmed.rows.map((row) => row.length));
+  return trimmed.rows.length >= 2 && width >= 2;
+}
+
+async function detectTableRangesWithGemini(
+  rawRows: string[][],
+  sourceType: TableSourceType,
+  apiKey: string,
+  sheetName?: string
+): Promise<GeminiTableRangeProposal[]> {
+  const systemInstruction = `당신은 비정형 표 그리드에서 논리적 표 범위를 찾는 분석기입니다. 반드시 JSON만 반환하세요. 설명, 마크다운, 코드블록은 금지합니다.
+
+반환 형식:
+{
+  "tables": [
+    {
+      "id": "table-1",
+      "startRow": 1,
+      "endRow": 10,
+      "startCol": 1,
+      "endCol": 5,
+      "headerAxis": "row",
+      "orientation": "row-major",
+      "confidence": 0.8,
+      "title": "표 이름",
+      "reason": "짧은 근거"
+    }
+  ]
+}
+
+규칙:
+- row/col은 1부터 시작합니다.
+- 여러 표가 보이면 모두 반환합니다.
+- 장식 행, 공백 행, 메모 행은 가능하면 제외합니다.
+- 불확실하면 confidence를 낮추고 ambiguous를 사용합니다.
+- 반드시 JSON만 반환합니다.`;
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_TABLE_RANGE_MODEL}:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        contents: [{
+          role: "user",
+          parts: [{
+            text: [
+              `sourceType=${sourceType}`,
+              sheetName ? `sheetName=${sheetName}` : "",
+              buildGridPreview(rawRows),
+            ].filter(Boolean).join("\n\n"),
+          }],
+        }],
+        generationConfig: { responseMimeType: "application/json" },
+      }),
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = await response.json();
+    const responseText = payload.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (typeof responseText !== "string" || !responseText.trim()) return [];
+
+    try {
+      return parseGeminiRangeResponse(responseText);
+    } catch {
+      return [];
+    }
+  } catch {
+    return [];
+  }
+}
+
+function buildLogicalTablesFromGeminiRanges(
+  proposals: GeminiTableRangeProposal[],
+  rawRows: string[][],
+  sourceType: TableSourceType,
+  sheetName?: string
+): LogicalTable[] {
+  return proposals.flatMap((proposal, index) => {
+    if (!validateGeminiRangeProposal(proposal, rawRows)) return [];
+
+    const sliced = rawRows
+      .slice(proposal.startRow - 1, proposal.endRow)
+      .map((row) => row.slice(proposal.startCol - 1, proposal.endCol));
+    const trimmed = trimEmptyBorders(sliced);
+    const table = normalizeLogicalTable(
+      trimmed.rows,
+      sourceType,
+      proposal.id?.trim() || `table-${index + 1}`,
+      {
+        startRow: proposal.startRow + trimmed.startRowOffset,
+        endRow: proposal.startRow + trimmed.startRowOffset + trimmed.rows.length - 1,
+        startCol: proposal.startCol + trimmed.startColOffset,
+        endCol: proposal.startCol + trimmed.startColOffset + Math.max(0, ...trimmed.rows.map((row) => row.length)) - 1,
+      },
+      sheetName
+    );
+
+    if (!table) return [];
+
+    return [{
+      ...table,
+      name: proposal.title || table.name,
+      orientation: proposal.orientation ?? table.orientation,
+      headerAxis: proposal.headerAxis ?? table.headerAxis,
+      confidence: proposal.confidence !== undefined ? Math.max(0.2, Math.min(1, proposal.confidence)) : table.confidence,
+      normalizationNotes: [
+        ...(table.normalizationNotes ?? []),
+        `Gemini fallback range applied${proposal.reason ? `: ${proposal.reason}` : "."}`,
+      ],
+    } satisfies LogicalTable];
+  });
+}
+
+function mergeLogicalTables(primary: LogicalTable[], fallback: LogicalTable[]): LogicalTable[] {
+  const merged = [...primary];
+
+  for (const candidate of fallback) {
+    const duplicateIndex = merged.findIndex((table) =>
+      table.startRow === candidate.startRow &&
+      table.endRow === candidate.endRow &&
+      table.startCol === candidate.startCol &&
+      table.endCol === candidate.endCol
+    );
+
+    if (duplicateIndex >= 0) {
+      if (candidate.confidence > merged[duplicateIndex].confidence) {
+        merged[duplicateIndex] = candidate;
+      }
+      continue;
+    }
+
+    merged.push(candidate);
+  }
+
+  return merged.sort((left, right) => right.confidence - left.confidence || (right.rowCount * right.columnCount) - (left.rowCount * left.columnCount));
+}
+
+function assignStableLogicalTableIds(logicalTables: LogicalTable[]): LogicalTable[] {
+  return logicalTables.map((table, index) => ({
+    ...table,
+    id: `table-${index + 1}`,
+  }));
+}
+
+async function resolveLogicalTables(
+  rawRows: string[][],
+  sourceType: TableSourceType,
+  sheetName: string | undefined,
+  options?: ParseTableOptions
+): Promise<LogicalTable[]> {
+  const heuristicTables = detectLogicalTables(rawRows, sourceType, sheetName);
+  const apiKey = options?.apiKey?.trim();
+
+  if (!apiKey || !shouldInvokeGeminiFallback(heuristicTables, rawRows)) {
+    return heuristicTables;
+  }
+
+  const geminiProposals = await detectTableRangesWithGemini(rawRows, sourceType, apiKey, sheetName);
+  const geminiTables = buildLogicalTablesFromGeminiRanges(geminiProposals, rawRows, sourceType, sheetName);
+  if (geminiTables.length === 0) {
+    return heuristicTables;
+  }
+
+  return assignStableLogicalTableIds(mergeLogicalTables(heuristicTables, geminiTables));
 }
 
 function detectDelimiter(text: string): string {
@@ -378,14 +865,20 @@ async function parseFirstSheetFromXlsx(buffer: ArrayBuffer): Promise<{ rows: str
   const sharedStrings = getSharedStrings(await unzipTextEntry(buffer, "xl/sharedStrings.xml"));
   const sheetDocument = parseXml(sheetXml);
   const rowElements = getXmlElements(sheetDocument, "row");
-  const rows = rowElements.map((rowElement) => {
+  const rows: string[][] = [];
+  rowElements.forEach((rowElement) => {
+    const rowIndexAttr = Number.parseInt(rowElement.getAttribute("r") ?? "", 10);
+    const rowIndex = Number.isFinite(rowIndexAttr) && rowIndexAttr > 0 ? rowIndexAttr - 1 : rows.length;
+    while (rows.length < rowIndex) {
+      rows.push([]);
+    }
     const row: string[] = [];
     for (const cell of getXmlElements(rowElement, "c")) {
       const cellRef = cell.getAttribute("r") ?? "A1";
       const columnIndex = cellRefToColumnIndex(cellRef);
       row[columnIndex] = getCellValue(cell, sharedStrings);
     }
-    return row;
+    rows[rowIndex] = row;
   });
 
   return { rows, sheetName };
@@ -398,29 +891,34 @@ function assertSupportedTableFile(fileName: string): TableSourceType {
   throw new Error("CSV 또는 XLSX 파일만 업로드할 수 있습니다.");
 }
 
-async function parseTableBuffer(buffer: ArrayBuffer, fileName: string): Promise<TableData> {
+async function parseTableBuffer(buffer: ArrayBuffer, fileName: string, options?: ParseTableOptions): Promise<TableData> {
   const sourceType = assertSupportedTableFile(fileName);
+  let rawRows: string[][] = [];
+  let sheetName: string | undefined;
 
   if (sourceType === "csv") {
     const text = bytesToUtf8(new Uint8Array(buffer));
     const delimiter = detectDelimiter(text);
-    const rows = parseDelimitedText(text, delimiter);
-    return normalizeTable(rows, sourceType);
+    rawRows = parseDelimitedText(text, delimiter);
+  } else {
+    const parsedSheet = await parseFirstSheetFromXlsx(buffer);
+    rawRows = parsedSheet.rows;
+    sheetName = parsedSheet.sheetName;
   }
 
-  const { rows, sheetName } = await parseFirstSheetFromXlsx(buffer);
-  return normalizeTable(rows, sourceType, sheetName);
+  const logicalTables = await resolveLogicalTables(rawRows, sourceType, sheetName, options);
+  return buildNormalizedTableFromLogicalTables(logicalTables, sourceType, sheetName);
 }
 
-export async function parseTableFile(file: File): Promise<TableData> {
+export async function parseTableFile(file: File, options?: ParseTableOptions): Promise<TableData> {
   const buffer = await file.arrayBuffer();
-  return parseTableBuffer(buffer, file.name);
+  return parseTableBuffer(buffer, file.name, options);
 }
 
-export async function parseTableBase64(base64: string, fileName: string): Promise<TableData> {
+export async function parseTableBase64(base64: string, fileName: string, options?: ParseTableOptions): Promise<TableData> {
   const bytes = decodeBase64(base64);
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-  return parseTableBuffer(buffer, fileName);
+  return parseTableBuffer(buffer, fileName, options);
 }
 
 export function getDatasetTitle(fileName: string): string {
@@ -882,6 +1380,12 @@ function buildDataQualityLines(profiles: ColumnProfile[]): string[] {
 }
 
 export function buildTableContext(tableData: TableData): string {
+  const logicalTableInventory = (tableData.logicalTables ?? []).map((table) => {
+    const shape = `${table.rowCount}x${table.columnCount}`;
+    const orientation = table.orientation === "column-major" ? "column-major" : table.orientation === "row-major" ? "row-major" : "ambiguous";
+    const sample = table.rows[0]?.slice(0, 4).join(" | ") || "샘플 없음";
+    return `- ${table.id}: ${table.name} | 범위 R${table.startRow}-R${table.endRow}, C${table.startCol}-C${table.endCol} | shape=${shape} | orientation=${orientation} | confidence=${table.confidence.toFixed(2)} | columns=${table.columns.join(", ")} | sample=${sample}`;
+  });
   const profiles = profileColumns(tableData.columns, tableData.rows);
   const metricCandidates = rankMetricCandidates(profiles);
   const dimensionCandidates = rankDimensionCandidates(profiles);
@@ -897,8 +1401,13 @@ export function buildTableContext(tableData: TableData): string {
     `[DATASET_META]`,
     `- 형식: ${(tableData.sourceType ?? "csv").toUpperCase()}`,
     tableData.sheetName ? `- 시트: ${tableData.sheetName}` : "",
+    `- 논리 표 수: ${tableData.logicalTables?.length ?? 1}`,
+    tableData.primaryLogicalTableId ? `- 대표 표: ${tableData.primaryLogicalTableId}` : "",
     `- 행 수: ${tableData.rowCount}`,
     `- 열 이름: ${tableData.columns.join(", ")}`,
+    "",
+    `[LOGICAL_TABLES]`,
+    ...(logicalTableInventory.length > 0 ? logicalTableInventory : ["- 감지된 추가 표가 없습니다."]),
     "",
     `[COLUMN_PROFILES]`,
     ...profiles.map(formatColumnProfile),

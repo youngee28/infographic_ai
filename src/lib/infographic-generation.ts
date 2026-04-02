@@ -1,4 +1,13 @@
 import type { AnalysisData, LayoutPlan } from "@/lib/session-types";
+import {
+  getAnalysisTitle,
+  getCautions,
+  getFindings,
+  getImplications,
+  getSourceTables,
+  getVisualizationBrief,
+  getVisualizationPrompt,
+} from "@/lib/analysis-selectors";
 
 interface GeminiInlineDataPart {
   mimeType?: string;
@@ -32,12 +41,11 @@ export function getSelectedLayoutPlan(analysisData?: AnalysisData | null): Layou
 export function buildInfographicContext(analysisData?: AnalysisData | null, promptOverride?: string) {
   if (!analysisData) return "";
 
-  const summaryLines = analysisData.summaries.flatMap((summary) => summary.lines?.map((line) => line.text) ?? []);
-  const issueLines = Array.isArray(analysisData.issues)
-    ? analysisData.issues.map((issue) => issue.text)
-    : typeof analysisData.issues === "string" && analysisData.issues.trim()
-      ? [analysisData.issues.trim()]
-      : [];
+  const tables = getSourceTables(analysisData);
+  const findings = getFindings(analysisData).map((item) => item.text);
+  const implications = getImplications(analysisData).map((item) => item.text);
+  const cautions = getCautions(analysisData).map((item) => item.text);
+  const brief = getVisualizationBrief(analysisData);
 
   const activeLayoutPlan = getSelectedLayoutPlan(analysisData);
   const layoutPlanContext = activeLayoutPlan
@@ -63,15 +71,20 @@ export function buildInfographicContext(analysisData?: AnalysisData | null, prom
     : "";
 
   return [
-    analysisData.title ? `데이터셋 제목: ${analysisData.title}` : "",
+    getAnalysisTitle(analysisData) ? `데이터셋 제목: ${getAnalysisTitle(analysisData)}` : "",
+    analysisData.dataset?.summary ? `데이터셋 요약: ${analysisData.dataset.summary}` : "",
+    tables.length > 0 ? `표 구성: ${tables.map((table) => `${table.name}(${table.role})`).join(" | ")}` : "",
     layoutPlanContext ? `확정된 레이아웃 계획:\n${layoutPlanContext}` : "",
-    analysisData.keywords.length > 0 ? `핵심 키워드: ${analysisData.keywords.join(", ")}` : "",
-    summaryLines.length > 0 ? `핵심 인사이트: ${summaryLines.slice(0, 6).join(" | ")}` : "",
-    issueLines.length > 0 ? `주의 포인트: ${issueLines.slice(0, 4).join(" | ")}` : "",
-    (promptOverride ?? analysisData.infographicPrompt)?.trim()
+    findings.length > 0 ? `핵심 신호: ${findings.slice(0, 6).join(" | ")}` : "",
+    implications.length > 0 ? `실무 시사점: ${implications.slice(0, 4).join(" | ")}` : "",
+    cautions.length > 0 ? `주의 포인트: ${cautions.slice(0, 4).join(" | ")}` : "",
+    brief?.headline ? `헤드라인: ${brief.headline}` : "",
+    brief?.coreMessage ? `핵심 메시지: ${brief.coreMessage}` : "",
+    brief?.storyFlow.length ? `스토리 흐름: ${brief.storyFlow.join(" -> ")}` : "",
+    (promptOverride ?? getVisualizationPrompt(analysisData))?.trim()
       ? activeLayoutPlan
-        ? `스타일/연출 브리프: ${(promptOverride ?? analysisData.infographicPrompt)?.trim()}`
-        : `기본 인포그래픽 브리프: ${(promptOverride ?? analysisData.infographicPrompt)?.trim()}`
+        ? `스타일/연출 브리프: ${(promptOverride ?? getVisualizationPrompt(analysisData))?.trim()}`
+        : `기본 인포그래픽 브리프: ${(promptOverride ?? getVisualizationPrompt(analysisData))?.trim()}`
       : "",
     analysisData.tableContext ? `테이블 컨텍스트:\n${analysisData.tableContext}` : "",
   ]

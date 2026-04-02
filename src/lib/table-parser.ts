@@ -1,5 +1,13 @@
 import type { NormalizedTable, TableFileType } from "@/lib/session-types";
 
+export interface RawSheetGrid {
+  fileType: TableFileType;
+  sheetName?: string;
+  rows: string[][];
+  rowCount: number;
+  columnCount: number;
+}
+
 interface SheetJsLike {
   read(data: ArrayBuffer, options: { type: "array" }): { SheetNames: string[]; Sheets: Record<string, unknown> };
   utils: {
@@ -31,6 +39,15 @@ const normalizeRows = (rows: unknown[][]): string[][] => {
   });
 };
 
+const decodeBase64 = (base64: string): Uint8Array => {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+};
+
 const createNormalizedTable = (rows: unknown[][], sheetName?: string): NormalizedTable => {
   const safeRows = normalizeRows(rows);
   const firstRow = safeRows[0] ?? [];
@@ -43,6 +60,19 @@ const createNormalizedTable = (rows: unknown[][], sheetName?: string): Normalize
     rows: dataRows,
     rowCount: dataRows.length,
     columnCount: columns.length,
+  };
+};
+
+const createRawSheetGrid = (rows: unknown[][], fileType: TableFileType, sheetName?: string): RawSheetGrid => {
+  const safeRows = normalizeRows(rows);
+  const rowCount = safeRows.length;
+  const columnCount = safeRows.reduce((max, row) => Math.max(max, row.length), 0);
+  return {
+    fileType,
+    sheetName,
+    rows: safeRows,
+    rowCount,
+    columnCount,
   };
 };
 
@@ -151,6 +181,18 @@ const parseXlsx = async (file: File): Promise<NormalizedTable> => {
   return createNormalizedTable(rows, sheetName);
 };
 
+const parseXlsxGridFromArrayBuffer = async (buffer: ArrayBuffer): Promise<RawSheetGrid> => {
+  const xlsx = await loadSheetJs();
+  const workbook = xlsx.read(buffer, { type: "array" });
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  const matrix = xlsx.utils.sheet_to_json(sheet, { header: 1, blankrows: true, defval: "" }) as unknown[];
+  const rows = matrix.filter(Array.isArray) as unknown[][];
+  return createRawSheetGrid(rows, "xlsx", sheetName);
+};
+
+const parseCsvGrid = (content: string): RawSheetGrid => createRawSheetGrid(parseCsv(content), "csv");
+
 export const getTableFileType = (fileName: string): TableFileType | null => {
   const normalized = fileName.toLowerCase();
   if (normalized.endsWith(".csv")) return "csv";
@@ -171,4 +213,57 @@ export const parseTableFile = async (file: File): Promise<{ fileType: TableFileT
   }
 
   return { fileType, tableData: await parseXlsx(file) };
+};
+
+export const parseRawGridFile = async (file: File): Promise<RawSheetGrid> => {
+  const fileType = getTableFileType(file.name);
+  if (!fileType) {
+    throw new Error("CSV 또는 XLSX 파일만 업로드할 수 있습니다.");
+  }
+
+  if (fileType === "csv") {
+    return parseCsvGrid(await file.text());
+  }
+
+  return parseXlsxGridFromArrayBuffer(await file.arrayBuffer());
+};
+
+export const parseRawGridBase64 = async (base64: string, fileName: string): Promise<RawSheetGrid> => {
+  const fileType = getTableFileType(fileName);
+  if (!fileType) {
+    throw new Error("CSV 또는 XLSX 파일만 업로드할 수 있습니다.");
+  }
+
+  if (fileType === "csv") {
+    return parseCsvGrid(new TextDecoder("utf-8").decode(decodeBase64(base64)));
+  }
+
+  const bytes = decodeBase64(base64);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return parseXlsxGridFromArrayBuffer(buffer);
+};
+
+export const serializeRawGridForGemini = (grid: RawSheetGrid, options?: { maxRows?: number; maxCols?: number }): string => {
+  const maxRows = options?.maxRows ?? 120;
+  const maxCols = options?.maxCols ?? 20;
+  const visibleRows = grid.rows.slice(0, maxRows).map((row, rowIndex) => {
+    const cells = Array.from({ length: Math.min(grid.columnCount, maxCols) }, (_, columnIndex) => {
+      const value = String(row[columnIndex] ?? "").trim();
+      return `C${columnIndex + 1}=${value || "∅"}`;
+    });
+    return `R${rowIndex + 1}: ${cells.join(" | ")}`;
+  });
+
+  return [
+    `[GRID_META]`,
+    `- fileType: ${grid.fileType}`,
+    grid.sheetName ? `- sheetName: ${grid.sheetName}` : "",
+    `- rowCount: ${grid.rowCount}`,
+    `- columnCount: ${grid.columnCount}`,
+    "",
+    `[GRID_ROWS]`,
+    ...visibleRows,
+  ]
+    .filter(Boolean)
+    .join("\n");
 };

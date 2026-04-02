@@ -37,8 +37,10 @@ export function RightPanel({
 }: RightPanelProps) {
   const currentFileName = useAppStore((s) => s.currentFileName);
   const selectedQnaModel = useAppStore((s) => s.selectedQnaModel);
+  const selectedLayoutModel = useAppStore((s) => s.selectedLayoutModel);
   const selectedImageModel = useAppStore((s) => s.selectedImageModel);
   const setSelectedQnaModel = useAppStore((s) => s.setSelectedQnaModel);
+  const setSelectedLayoutModel = useAppStore((s) => s.setSelectedLayoutModel);
   const setSelectedImageModel = useAppStore((s) => s.setSelectedImageModel);
   const [activeTab, setActiveTab] = useState<"summary" | "layout" | "image">(() => (showImageTab ? "layout" : "summary"));
   const effectiveActiveTab = showImageTab ? activeTab : "summary";
@@ -59,8 +61,10 @@ export function RightPanel({
         }}
         showImageTab={showImageTab}
         selectedQnaModel={selectedQnaModel}
+        selectedLayoutModel={selectedLayoutModel}
         selectedImageModel={selectedImageModel}
         onChangeQnaModel={setSelectedQnaModel}
+        onChangeLayoutModel={setSelectedLayoutModel}
         onChangeImageModel={setSelectedImageModel}
       />
 

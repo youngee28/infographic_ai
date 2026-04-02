@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { LeftPanel } from "@/components/pdf/left-panel";
 import { RightPanel } from "@/components/pdf/right-panel";
+import { normalizeAnalysisData } from "@/lib/analysis-schema";
 import type { AnalysisData } from "@/lib/session-types";
 import { useAppStore } from "@/lib/app-store";
 import type { Message } from "@/lib/store";
@@ -38,7 +39,9 @@ export function ShareSessionClient({ publicId }: ShareSessionClientProps) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "세션을 열 수 없습니다.");
 
-      const nextAnalysisData = (data.payload?.analysisData ?? null) as AnalysisData | null;
+      const nextAnalysisData = data.payload?.analysisData
+        ? normalizeAnalysisData(data.payload.analysisData, data.payload?.fileName || "공유 문서")
+        : (null as AnalysisData | null);
       const nextFileName = (data.payload?.fileName as string | undefined) || "공유 문서";
       const nextMessages = Array.isArray(data.payload?.messages)
         ? (data.payload.messages as Message[])

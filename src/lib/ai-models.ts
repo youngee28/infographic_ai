@@ -9,6 +9,10 @@ export const QNA_MODELS = [
 
 export type QnaModel = (typeof QNA_MODELS)[number];
 
+export const LAYOUT_MODELS = QNA_MODELS;
+
+export type LayoutModel = (typeof LAYOUT_MODELS)[number];
+
 export const IMAGE_MODELS = [
   "gemini-2.5-flash-image",
   "gemini-3.1-flash-image-preview",
@@ -18,10 +22,14 @@ export const IMAGE_MODELS = [
 export type ImageModel = (typeof IMAGE_MODELS)[number];
 
 export const DEFAULT_QNA_MODEL: QnaModel = "gemini-3-flash-preview";
+export const DEFAULT_LAYOUT_MODEL: LayoutModel = "gemini-2.5-flash";
 export const DEFAULT_IMAGE_MODEL: ImageModel = "gemini-3-pro-image-preview";
 
 export const isQnaModel = (value: string): value is QnaModel =>
   QNA_MODELS.includes(value as QnaModel);
+
+export const isLayoutModel = (value: string): value is LayoutModel =>
+  LAYOUT_MODELS.includes(value as LayoutModel);
 
 export const isImageModel = (value: string): value is ImageModel =>
   IMAGE_MODELS.includes(value as ImageModel);

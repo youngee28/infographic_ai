@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Menu, Sparkles } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useAppStore } from "@/lib/app-store";
+import { normalizeAnalysisData } from "@/lib/analysis-schema";
+import {
+  buildChartRecommendationPromptContext,
+  buildChartRecommendations,
+  rerankLayoutPlansByRecommendations,
+} from "@/lib/chart-recommendation";
 import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
 import { store, type TableSession } from "@/lib/store";
 import type {
@@ -15,6 +21,7 @@ import type {
   ReferenceLine,
   SummaryVariant,
 } from "@/lib/session-types";
+import { parseRawGridBase64, serializeRawGridForGemini } from "@/lib/table-parser";
 import {
   buildTableContext,
   getDatasetTitle,
@@ -111,7 +118,7 @@ function normalizeLayoutSectionType(value: unknown): LayoutSectionType | undefin
   return isLayoutSectionType(value) ? value : undefined;
 }
 
-function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
+function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | undefined {
   if (!value || typeof value !== "object") return undefined;
 
   const candidate = value as {
@@ -202,7 +209,7 @@ function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
               const itemCandidate = item as { label?: unknown; value?: unknown };
               const label = normalizeNonEmptyString(itemCandidate.label);
               const itemValue = normalizeNonEmptyString(itemCandidate.value);
-              return label && itemValue ? [{ label, value: itemValue }] : [];
+              return label && itemValue ? [{ id: `item-${index + 1}-${label}`, label, value: itemValue }] : [];
             })
           : undefined;
 
@@ -244,7 +251,7 @@ function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
   }
 
   return {
-    id: normalizeNonEmptyString((candidate as { id?: unknown }).id) ?? `layout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: normalizeNonEmptyString((candidate as { id?: unknown }).id) ?? fallbackId ?? "layout-option",
     layoutType,
     aspectRatio,
     name: normalizeNonEmptyString((candidate as { name?: unknown }).name),
@@ -258,13 +265,15 @@ function normalizeLayoutPlan(value: unknown): LayoutPlan | undefined {
 function normalizeLayoutPlans(value: unknown): LayoutPlan[] | undefined {
   const candidates = Array.isArray(value) ? value : value ? [value] : [];
   const plans = candidates
-    .map((candidate) => normalizeLayoutPlan(candidate))
+    .map((candidate, index) => normalizeLayoutPlan(candidate, `layout-option-${index + 1}`))
     .filter((plan): plan is LayoutPlan => plan !== undefined)
     .map((plan, index) => ({
       ...plan,
       id: plan.id || `layout-option-${index + 1}`,
       name: plan.name || `시안 ${index + 1}`,
-      description: plan.description || `${plan.aspectRatio === "portrait" ? "세로형" : plan.aspectRatio === "landscape" ? "가로형" : "정사각형"} 대시보드 시안`,
+      description:
+        plan.description ||
+        `${plan.aspectRatio === "portrait" ? "세로형" : plan.aspectRatio === "landscape" ? "가로형" : "정사각형"} 대시보드 시안`,
     }));
 
   return plans.length > 0 ? plans : undefined;
@@ -276,50 +285,238 @@ function getSelectedLayoutPlan(
   fallbackPlan?: LayoutPlan
 ): LayoutPlan | undefined {
   if (layoutPlans && layoutPlans.length > 0) {
-    return layoutPlans.find((plan) => plan.id === selectedLayoutPlanId) ?? layoutPlans[0];
+    if (selectedLayoutPlanId) {
+      const selectedPlan = layoutPlans.find((plan) => plan.id === selectedLayoutPlanId);
+      if (selectedPlan) {
+        return selectedPlan;
+      }
+    }
+
+    if (fallbackPlan) {
+      const fallbackChartSignature = JSON.stringify(
+        fallbackPlan.sections.flatMap((section) =>
+          (section.charts ?? []).map((chart) => ({
+            chartType: chart.chartType,
+            dimension: chart.dimension ?? "",
+            metric: chart.metric ?? "",
+          }))
+        )
+      );
+
+      const semanticallyMatchedPlan = layoutPlans.find((plan) => {
+        const planChartSignature = JSON.stringify(
+          plan.sections.flatMap((section) =>
+            (section.charts ?? []).map((chart) => ({
+              chartType: chart.chartType,
+              dimension: chart.dimension ?? "",
+              metric: chart.metric ?? "",
+            }))
+          )
+        );
+        return planChartSignature === fallbackChartSignature;
+      });
+
+      if (semanticallyMatchedPlan) {
+        return semanticallyMatchedPlan;
+      }
+    }
+
+    return layoutPlans[0];
   }
   return fallbackPlan;
 }
 
-function createPendingAnalysis(fileName: string, tableData: TableData): AnalysisData {
+function buildSourceInventory(fileName: string, tableData: TableData, tableContext: string) {
+  if (tableData.logicalTables && tableData.logicalTables.length > 0) {
+    const primaryLogicalTableId = tableData.primaryLogicalTableId ?? tableData.logicalTables[0]?.id;
+    return {
+      tables: tableData.logicalTables.map((table, index) => ({
+        id: table.id,
+        name: table.name,
+        role: table.id === primaryLogicalTableId ? "primary" as const : table.orientation === "column-major" ? "reference" as const : "supporting" as const,
+        purpose: table.orientation === "column-major" ? "열 기준 항목 구조를 파악합니다." : "행 기준 레코드 구조를 파악합니다.",
+        context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열에서 감지한 논리 표입니다.${table.id === primaryLogicalTableId ? ` ${tableContext}` : ""}`.trim(),
+        dimensions: table.columns.slice(0, 2),
+        metrics: table.columns.slice(2),
+        grain: table.orientation,
+      })),
+      relations: [],
+    };
+  }
+
   return {
-    title: getDatasetTitle(fileName),
-    summaries: [],
-    keywords: [],
-    insights: "",
-    issues: "",
-    generatedLayoutPlans: undefined,
-    selectedLayoutPlanId: undefined,
-    generatedLayoutPlan: undefined,
-    layoutPlan: undefined,
-    generatedInfographicPrompt: "",
-    infographicPrompt: "",
-    tableContext: buildTableContext(tableData),
-    tableData,
-    status: "pending",
+    tables: [
+      {
+        id: "table-1",
+        name: tableData.sheetName?.trim() || getDatasetTitle(fileName),
+        role: "primary" as const,
+        purpose: "업로드된 표의 핵심 구조와 수치를 파악합니다.",
+        context: tableContext,
+        dimensions: tableData.columns.slice(0, 2),
+        metrics: tableData.columns.slice(2),
+        grain: tableData.sheetName ? "sheet" : undefined,
+      },
+    ],
+    relations: [],
   };
 }
 
-function createUnsupportedAnalysis(fileName: string): AnalysisData {
+function buildInitialSheetStructure(fileName: string, tableData: TableData) {
+  if (tableData.logicalTables && tableData.logicalTables.length > 0) {
+    return {
+      sheetName: tableData.sheetName,
+      tableCount: tableData.logicalTables.length,
+      tables: tableData.logicalTables.map((table) => ({
+        id: table.id,
+        title: table.name,
+        structure: table.orientation,
+        confidence: table.confidence,
+        range: {
+          startRow: table.startRow,
+          endRow: table.endRow,
+          startCol: table.startCol,
+          endCol: table.endCol,
+        },
+        header: {
+          axis: table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous",
+        },
+        dimensions: table.columns.slice(0, 2),
+        metrics: table.columns.slice(2),
+        notes: table.normalizationNotes,
+      })),
+    };
+  }
+
   return {
-    title: getDatasetTitle(fileName),
-    summaries: [
-      {
-        title: "지원 안내",
-        lines: [{ text: "이 세션은 표 미리보기용 데이터가 없어 새 CSV/XLSX 업로드가 필요합니다.", pages: [] }],
-      },
-    ],
-    keywords: ["legacy", "session"],
-    insights: "이 세션은 이전 형식으로 저장되어 표 인사이트 워크스페이스에 바로 복원할 수 없습니다.",
-    issues: "새 CSV 또는 XLSX 파일로 다시 업로드하면 왼쪽 표 미리보기와 오른쪽 인포그래픽 인터페이스를 사용할 수 있습니다.",
-    generatedLayoutPlans: undefined,
-    selectedLayoutPlanId: undefined,
-    generatedLayoutPlan: undefined,
-    layoutPlan: undefined,
-    generatedInfographicPrompt: "",
-    infographicPrompt: "",
-    status: "complete",
+    sheetName: tableData.sheetName,
+    tableCount: tableData.rowCount > 0 ? 1 : 0,
+    tables: tableData.rowCount > 0
+      ? [{
+          id: "table-1",
+          title: tableData.sheetName?.trim() || getDatasetTitle(fileName),
+          structure: "ambiguous" as const,
+          confidence: 0.4,
+          range: {
+            startRow: 1,
+            endRow: Math.max(1, tableData.rowCount + 1),
+            startCol: 1,
+            endCol: Math.max(1, tableData.columnCount),
+          },
+          header: { axis: "ambiguous" as const },
+          dimensions: tableData.columns.slice(0, 2),
+          metrics: tableData.columns.slice(2),
+        }]
+      : [],
   };
+}
+
+function serializeFallbackGridFromTableData(tableData: TableData): string {
+  return serializeRawGridForGemini({
+    fileType: tableData.sourceType ?? "csv",
+    sheetName: tableData.sheetName,
+    rows: [tableData.columns, ...tableData.rows],
+    rowCount: tableData.rowCount + 1,
+    columnCount: tableData.columnCount,
+  });
+}
+
+function createPendingAnalysis(fileName: string, tableData: TableData): AnalysisData {
+  const title = getDatasetTitle(fileName);
+  const tableContext = buildTableContext(tableData);
+  return normalizeAnalysisData(
+    {
+      schemaVersion: "3",
+      title,
+      dataset: {
+        title,
+        summary: "",
+        tableCount: tableData.logicalTables?.length ?? 1,
+        sourceType: tableData.sourceType,
+      },
+      sheetStructure: buildInitialSheetStructure(fileName, tableData),
+      sourceInventory: buildSourceInventory(fileName, tableData, tableContext),
+      findings: [],
+      implications: [],
+      cautions: [],
+      askNext: [],
+      summaries: [],
+      keywords: [],
+      insights: "",
+      issues: "",
+      chartRecommendations: buildChartRecommendations(tableData),
+      generatedLayoutPlans: undefined,
+      selectedLayoutPlanId: undefined,
+      generatedLayoutPlan: undefined,
+      layoutPlan: undefined,
+      generatedInfographicPrompt: "",
+      infographicPrompt: "",
+      tableContext,
+      tableData,
+      status: "pending",
+    },
+    title
+  );
+}
+
+function createUnsupportedAnalysis(fileName: string): AnalysisData {
+  const title = getDatasetTitle(fileName);
+  return normalizeAnalysisData(
+    {
+      schemaVersion: "3",
+      title,
+      dataset: {
+        title,
+        summary: "표 미리보기용 데이터가 없어 새 업로드가 필요합니다.",
+        tableCount: 0,
+      },
+      sourceInventory: {
+        tables: [],
+        relations: [],
+      },
+      findings: [
+        {
+          text: "이 세션은 표 미리보기용 데이터가 없어 새 CSV/XLSX 업로드가 필요합니다.",
+          sourceTableIds: [],
+          evidence: [],
+          priority: "high",
+        },
+      ],
+      implications: [
+        {
+          text: "새 CSV 또는 XLSX 파일로 다시 업로드하면 왼쪽 표 미리보기와 오른쪽 인포그래픽 인터페이스를 사용할 수 있습니다.",
+          sourceTableIds: [],
+          evidence: [],
+          audience: "general",
+        },
+      ],
+      cautions: [
+        {
+          text: "이 세션은 이전 형식으로 저장되어 표 인사이트 워크스페이스에 바로 복원할 수 없습니다.",
+          sourceTableIds: [],
+          evidence: [],
+        },
+      ],
+      askNext: [],
+      summaries: [
+        {
+          title: "지원 안내",
+          lines: [{ text: "이 세션은 표 미리보기용 데이터가 없어 새 CSV/XLSX 업로드가 필요합니다.", pages: [] }],
+        },
+      ],
+      keywords: ["legacy", "session"],
+      insights: "",
+      issues: "새 CSV 또는 XLSX 파일로 다시 업로드하면 왼쪽 표 미리보기와 오른쪽 인포그래픽 인터페이스를 사용할 수 있습니다.",
+      chartRecommendations: undefined,
+      generatedLayoutPlans: undefined,
+      selectedLayoutPlanId: undefined,
+      generatedLayoutPlan: undefined,
+      layoutPlan: undefined,
+      generatedInfographicPrompt: "",
+      infographicPrompt: "",
+      status: "complete",
+    },
+    title
+  );
 }
 
 function cloneTableData(tableData: TableData): TableData {
@@ -328,15 +525,30 @@ function cloneTableData(tableData: TableData): TableData {
     columns: [...tableData.columns],
     rows: tableData.rows.map((row) => [...row]),
     normalizationNotes: tableData.normalizationNotes ? [...tableData.normalizationNotes] : undefined,
+    primaryLogicalTableId: tableData.primaryLogicalTableId,
+    logicalTables: tableData.logicalTables?.map((table) => ({
+      ...table,
+      columns: [...table.columns],
+      rows: table.rows.map((row) => [...row]),
+      normalizationNotes: table.normalizationNotes ? [...table.normalizationNotes] : undefined,
+    })),
   };
 }
 
 function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData {
   if (!source.tableData) return source;
   const pending = createPendingAnalysis(fileName, source.tableData);
-  return {
+  return normalizeAnalysisData({
     ...pending,
     ...source,
+    dataset: source.dataset ?? pending.dataset,
+    sheetStructure: source.sheetStructure ?? pending.sheetStructure,
+    sourceInventory: source.sourceInventory ?? pending.sourceInventory,
+    findings: source.findings ?? pending.findings,
+    implications: source.implications ?? pending.implications,
+    cautions: source.cautions ?? pending.cautions,
+    askNext: source.askNext ?? pending.askNext,
+    visualizationBrief: source.visualizationBrief ?? pending.visualizationBrief,
     title: source.title?.trim() || pending.title,
     generatedLayoutPlans:
       source.generatedLayoutPlans ??
@@ -349,7 +561,7 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
       source.generatedInfographicPrompt?.trim() || source.infographicPrompt?.trim() || pending.generatedInfographicPrompt,
     tableContext: pending.tableContext,
     status: source.status ?? "pending",
-  };
+  }, source.title?.trim() || pending.title || getDatasetTitle(fileName));
 }
 
 function hasCompleteAnalysis(analysisData: AnalysisData | null | undefined): boolean {
@@ -377,6 +589,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
   const currentFileName = useAppStore((state) => state.currentFileName);
   const setCurrentFileName = useAppStore((state) => state.setCurrentFileName);
   const layoutSystemPrompt = useAppStore((state) => state.layoutSystemPrompt);
+  const selectedLayoutModel = useAppStore((state) => state.selectedLayoutModel);
   const [sessions, setSessions] = useState<TableSession[]>([]);
   const [persistedTableData, setPersistedTableData] = useState<TableData | null>(null);
   const [draftTableData, setDraftTableData] = useState<TableData | null>(null);
@@ -445,7 +658,10 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     };
 
     const seededAnalysis = session.analysisData
-      ? mergeAnalysisSeed(session.fileName, { ...session.analysisData, tableData: session.analysisData.tableData ?? sessionTableData })
+      ? mergeAnalysisSeed(
+          session.fileName,
+          normalizeAnalysisData({ ...session.analysisData, tableData: session.analysisData.tableData ?? sessionTableData }, getDatasetTitle(session.fileName))
+        )
       : createPendingAnalysis(session.fileName, sessionTableData);
 
     const shouldSave =
@@ -471,7 +687,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
 
     setIsAnalyzing(true);
     try {
-      const [tableData, base64Data] = await Promise.all([parseTableFile(file), readFileAsBase64(file)]);
+      const [tableData, base64Data] = await Promise.all([parseTableFile(file, { apiKey: key }), readFileAsBase64(file)]);
       const fileType = tableData.sourceType ?? (file.name.toLowerCase().endsWith(".xlsx") ? "xlsx" : "csv");
       const pendingAnalysis = createPendingAnalysis(file.name, tableData);
 
@@ -579,40 +795,145 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     }
 
     try {
+      const currentTableData = baseAnalysis.tableData;
       const layoutPromptInstruction = options?.layoutPromptOverride?.trim() || layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
-      const systemInstruction = `당신은 데이터 분석가이자 인포그래픽 기획자입니다. 제공된 정규화 테이블을 읽고 아래 JSON 구조로만 답변하세요.
+      const chartRecommendations = baseAnalysis.chartRecommendations ?? buildChartRecommendations(currentTableData);
+      const chartRecommendationPrompt = buildChartRecommendationPromptContext(chartRecommendations);
+      const rawGridText = session.fileBase64
+        ? await parseRawGridBase64(session.fileBase64, session.fileName)
+            .then((grid) => serializeRawGridForGemini(grid))
+            .catch(() => serializeFallbackGridFromTableData(currentTableData))
+        : serializeFallbackGridFromTableData(currentTableData);
+      const systemInstruction = `당신은 비정형 엑셀/CSV 시트에서 표 구조를 판정하고, 그 구조를 바탕으로 인사이트와 인포그래픽 기획을 만드는 분석가입니다.
+
+핵심 원칙:
+- 첫 번째 비어있지 않은 행을 무조건 헤더로 가정하면 안 됩니다.
+- 시트 안에는 표가 하나일 수도 있고 여러 개일 수도 있습니다.
+- 각 표의 구조는 row-major, column-major, mixed, ambiguous 중 하나일 수 있습니다.
+- mixed는 상단 행 헤더와 왼쪽 열 헤더가 동시에 존재하고 실제 수치 데이터가 교차 영역에 있는 경우입니다.
+- 제목행, 메모행, 그룹 라벨, 단위 표시는 데이터 본문과 구분해야 합니다.
+- 연도(2019, 2020...)가 가로로 반복되고 지표명(사업체 수, 매출액...)이 세로로 반복되면 mixed일 가능성이 높습니다.
+
+당신은 반드시 먼저 판단해야 합니다:
+1. 시트 안에 표가 몇 개인가
+2. 각 표의 범위(range)는 어디인가
+3. 각 표의 structure는 무엇인가
+4. 각 표의 header axis / headerRows / headerCols는 무엇인가
+5. 각 표의 실제 dataRegion은 어디인가
+
+반드시 아래 JSON 구조로만 답변하세요.
 
 {
-  "title": "데이터셋 핵심을 18자 내외로 요약한 제목",
-  "summaries": [
+  "schemaVersion": "3",
+  "dataset": {
+    "title": "데이터셋 핵심을 18자 내외로 요약한 제목",
+    "summary": "데이터셋 전체를 한두 문장으로 설명",
+    "tableCount": 1,
+    "sourceType": "csv"
+  },
+  "sheetStructure": {
+    "sheetName": "Sheet1",
+    "tableCount": 1,
+    "tables": [
+      {
+        "id": "table-1",
+        "title": "대표 표 이름",
+        "structure": "row-major",
+        "confidence": 0.9,
+        "range": { "startRow": 2, "endRow": 14, "startCol": 1, "endCol": 5 },
+        "header": {
+          "axis": "row",
+          "headerRows": [2]
+        },
+        "dataRegion": { "startRow": 3, "endRow": 14, "startCol": 1, "endCol": 5 },
+        "dimensions": ["대표 범주 컬럼"],
+        "metrics": ["대표 수치 컬럼"],
+        "notes": ["표 구조를 짧게 설명"]
+      }
+    ]
+  },
+  "sourceInventory": {
+    "tables": [
+      {
+        "id": "table-1",
+        "name": "대표 표 이름",
+        "role": "primary",
+        "purpose": "이 표를 보는 목적",
+        "context": "이 표가 전체 분석에서 어떤 맥락인지",
+        "dimensions": ["대표 범주 컬럼"],
+        "metrics": ["대표 수치 컬럼"],
+        "grain": "month",
+        "keyTakeaway": "이 표의 핵심 한 줄"
+      }
+    ],
+    "relations": []
+  },
+  "findings": [
     {
-      "title": "핵심 인사이트",
-      "lines": [
-        { "text": "가장 중요한 패턴 또는 비교 1개", "pages": [] },
-        { "text": "가장 중요한 패턴 또는 비교 1개", "pages": [] },
-        { "text": "가장 중요한 패턴 또는 비교 1개", "pages": [] }
-      ]
+      "text": "눈에 띄는 변화, 패턴, 비교 결과",
+      "sourceTableIds": ["table-1"],
+      "evidence": [],
+      "priority": "high"
     },
     {
-      "title": "데이터 스토리",
-      "lines": [
-        { "text": "표를 읽을 때 필요한 맥락", "pages": [] },
-        { "text": "성과/리스크/기회 중 중요한 내용", "pages": [] },
-        { "text": "의사결정을 위한 한 줄 제안", "pages": [] }
-      ]
+      "text": "데이터에서 직접 읽히는 두 번째 핵심 신호",
+      "sourceTableIds": ["table-1"],
+      "evidence": [],
+      "priority": "medium"
     }
   ],
-  "keywords": ["키워드1", "키워드2", "키워드3", "키워드4"],
-  "insights": "표의 수치만으로 바로 답할 수 있는 짧은 질문 3개를 줄바꿈으로 구분",
-  "issues": [
-    { "text": "비어있는 값, 이상치, 해석상 주의점", "pages": [] },
-    { "text": "추가 확인이 필요한 컬럼 또는 패턴", "pages": [] }
+  "implications": [
+    {
+      "text": "실무적으로 어떤 의미인지",
+      "sourceTableIds": ["table-1"],
+      "evidence": [],
+      "audience": "business"
+    },
+    {
+      "text": "의사결정에 연결되는 한 줄 제안",
+      "sourceTableIds": ["table-1"],
+      "evidence": [],
+      "audience": "executive"
+    }
   ],
+  "cautions": [
+    {
+      "text": "비어있는 값, 이상치, 해석상 주의점",
+      "sourceTableIds": ["table-1"],
+      "evidence": []
+    },
+    {
+      "text": "추가 확인이 필요한 컬럼 또는 패턴",
+      "sourceTableIds": ["table-1"],
+      "evidence": []
+    }
+  ],
+  "askNext": [
+    "표의 수치만으로 바로 답할 수 있는 짧은 질문",
+    "표의 수치만으로 바로 답할 수 있는 짧은 질문",
+    "표의 수치만으로 바로 답할 수 있는 짧은 질문"
+  ],
+  "visualizationBrief": {
+    "headline": "인포그래픽 헤드라인",
+    "coreMessage": "이 데이터를 어떻게 한 장으로 읽히게 할지",
+    "primaryTableId": "table-1",
+    "supportingTableIds": [],
+    "storyFlow": ["전체 흐름", "핵심 비교", "실무 시사점"],
+    "chartDirections": [
+      {
+        "tableId": "table-1",
+        "chartType": "bar",
+        "goal": "무엇을 비교/설명하는 차트인지"
+      }
+    ],
+    "tone": "practical",
+    "prompt": "이 데이터를 인포그래픽으로 만들기 위한 구체적인 한국어 프롬프트"
+  },
   "layoutPlans": [
     {
       "id": "layout-option-1",
       "name": "시안 1",
-      "description": "가장 중요한 비교 차트를 메인으로 배치한 시안",
+      "description": "가장 중요한 비교 차트와 핵심 해석을 한 화면에 배치한 시안",
       "layoutType": "dashboard",
       "aspectRatio": "portrait",
       "sections": [
@@ -635,6 +956,12 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
               "metric": "핵심 수치 컬럼"
             }
           ]
+        },
+        {
+          "id": "takeaway",
+          "type": "takeaway",
+          "title": "핵심 해석 메모",
+          "note": "차트 바로 아래에 읽혀야 할 핵심 메시지"
         }
       ],
       "visualPolicy": {
@@ -642,102 +969,24 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
         "chartRatio": 0.75,
         "iconRatio": 0.1
       }
-    },
-    {
-      "id": "layout-option-2",
-      "name": "시안 2",
-      "description": "KPI 카드와 보조 차트를 섞어 핵심 수치를 먼저 보여주는 시안",
-      "layoutType": "dashboard",
-      "aspectRatio": "portrait",
-      "sections": [
-        {
-          "id": "header-2",
-          "type": "header",
-          "title": "핵심 수치 요약 영역"
-        },
-        {
-          "id": "kpi-group-2",
-          "type": "kpi-group",
-          "title": "상단 KPI 카드 영역",
-          "items": [
-            { "label": "대표 지표 1", "value": "원본 수치 기반" },
-            { "label": "대표 지표 2", "value": "원본 수치 기반" },
-            { "label": "대표 지표 3", "value": "원본 수치 기반" }
-          ]
-        },
-        {
-          "id": "support-chart-group-2",
-          "type": "chart-group",
-          "title": "보조 비교 차트 영역",
-          "charts": [
-            {
-              "id": "support-chart-2",
-              "chartType": "line",
-              "title": "추세를 보여주는 보조 차트 제목",
-              "goal": "시간 흐름 또는 순서 변화 설명",
-              "dimension": "구간 또는 범주 컬럼",
-              "metric": "변화량 수치 컬럼"
-            }
-          ]
-        }
-      ],
-      "visualPolicy": {
-        "textRatio": 0.2,
-        "chartRatio": 0.65,
-        "iconRatio": 0.15
-      }
-    },
-    {
-      "id": "layout-option-3",
-      "name": "시안 3",
-      "description": "반복 섹션 구조로 항목별 비교를 연속해서 보여주는 시안",
-      "layoutType": "dashboard",
-      "aspectRatio": "portrait",
-      "sections": [
-        {
-          "id": "header-3",
-          "type": "header",
-          "title": "항목별 반복 비교 영역"
-        },
-        {
-          "id": "repeat-chart-group-3",
-          "type": "chart-group",
-          "title": "항목 반복 비교 차트 영역",
-          "charts": [
-            {
-              "id": "repeat-chart-3",
-              "chartType": "stacked-bar",
-              "title": "항목별 구성비 비교 차트 제목",
-              "goal": "항목 간 구성을 동시에 비교",
-              "dimension": "대표 범주 컬럼",
-              "metric": "핵심 합산 수치 컬럼"
-            }
-          ]
-        },
-        {
-          "id": "note-3",
-          "type": "takeaway",
-          "title": "핵심 해석 메모",
-          "note": "차트 아래에 바로 읽히는 해석을 배치"
-        }
-      ],
-      "visualPolicy": {
-        "textRatio": 0.18,
-        "chartRatio": 0.7,
-        "iconRatio": 0.12
-      }
     }
   ],
   "infographicPrompt": "이 데이터를 인포그래픽으로 만들기 위한 구체적인 한국어 프롬프트"
 }
 
 공통 규칙:
-1. summaries[0]은 반드시 3개 line을 채우세요.
-2. 모든 pages는 빈 배열 []로 유지하세요.
-3. insights는 질문만 3줄로 작성하고 번호나 불릿을 붙이지 마세요.
-4. infographicPrompt는 차트 유형, 강조 지표, 시각적 톤을 포함한 실무형 프롬프트로 작성하세요.
-5. 반드시 한국어 JSON만 반환하고 다른 설명은 금지합니다.
-6. layoutPlans의 각 시안은 sections를 비워두면 안 되며, 최소 1개의 chart-group과 그 안의 유효한 charts를 포함해야 합니다.
+1. dataset.tableCount와 sheetStructure.tableCount는 실제 파악한 표 개수와 일치해야 합니다.
+2. 시트 안 표 수가 불명확하면 tables를 여러 후보로 나누고 confidence를 낮추세요.
+3. structure는 row-major, column-major, mixed, ambiguous 중 하나만 사용하세요.
+4. header.axis는 row, column, mixed, ambiguous 중 하나만 사용하세요.
+5. mixed 구조가 보이면 row-major나 column-major로 억지 분류하지 말고 mixed를 사용하세요.
+6. headerRows, headerCols, dataRegion은 구조 판단에 도움이 되면 적극적으로 채우세요.
+7. findings는 2~4개, implications는 2~4개, cautions는 1~3개로 간결하게 작성하세요.
+8. askNext는 질문만 3개 작성하고 번호나 불릿을 붙이지 마세요.
+9. visualizationBrief.prompt와 infographicPrompt는 차트 유형, 강조 지표, 시각적 톤을 포함한 실무형 프롬프트로 작성하세요.
+10. 모든 evidence.pages는 빈 배열 []로 유지하세요.
+11. 반드시 한국어 JSON만 반환하고 다른 설명은 금지합니다.
+12. layoutPlans의 시안은 1개만 반환하며, sections를 비워두면 안 되고 최소 1개의 chart-group과 그 안의 유효한 charts를 포함해야 합니다.
 
 레이아웃 생성 시스템 프롬프트:
 ${layoutPromptInstruction}`;
@@ -749,7 +998,7 @@ ${layoutPromptInstruction}`;
             role: "user",
             parts: [
               {
-                text: `다음은 정규화된 표 데이터입니다. 이 데이터를 바탕으로 인사이트와 인포그래픽 기획 결과를 JSON으로 정리해주세요.\n\n${baseAnalysis.tableContext}`,
+                text: `다음은 SheetJS 기반 raw grid입니다. 먼저 시트 구조를 판정하고, 그 구조를 기준으로 인사이트와 인포그래픽 기획 결과를 JSON으로 정리해주세요.\n\n${rawGridText}${chartRecommendationPrompt ? `\n\n${chartRecommendationPrompt}` : ""}`,
               },
             ],
           },
@@ -758,7 +1007,7 @@ ${layoutPromptInstruction}`;
       };
 
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${selectedLayoutModel}:generateContent?key=${apiKey}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -779,41 +1028,69 @@ ${layoutPromptInstruction}`;
       }
 
       const parsed = JSON.parse(responseText) as {
-         title?: unknown;
-         summaries?: unknown;
-         keywords?: unknown;
-         insights?: unknown;
-         issues?: unknown;
-         layoutPlans?: unknown;
-         layoutPlan?: unknown;
-         infographicPrompt?: unknown;
-       };
+        schemaVersion?: unknown;
+        title?: unknown;
+        dataset?: unknown;
+        sheetStructure?: unknown;
+        sourceInventory?: unknown;
+        findings?: unknown;
+        implications?: unknown;
+        cautions?: unknown;
+        askNext?: unknown;
+        visualizationBrief?: unknown;
+        summaries?: unknown;
+        keywords?: unknown;
+        insights?: unknown;
+        issues?: unknown;
+        layoutPlans?: unknown;
+        layoutPlan?: unknown;
+        infographicPrompt?: unknown;
+      };
 
-      const normalizedLayoutPlans =
+      const normalizedLayoutPlans = rerankLayoutPlansByRecommendations(
         normalizeLayoutPlans(parsed.layoutPlans ?? parsed.layoutPlan) ??
-        baseAnalysis.generatedLayoutPlans ??
-        (baseAnalysis.generatedLayoutPlan ? [baseAnalysis.generatedLayoutPlan] : baseAnalysis.layoutPlan ? [baseAnalysis.layoutPlan] : undefined);
+          baseAnalysis.generatedLayoutPlans ??
+          (baseAnalysis.generatedLayoutPlan ? [baseAnalysis.generatedLayoutPlan] : baseAnalysis.layoutPlan ? [baseAnalysis.layoutPlan] : undefined),
+        chartRecommendations
+      );
       const selectedLayoutPlan = getSelectedLayoutPlan(
         normalizedLayoutPlans,
         baseAnalysis.selectedLayoutPlanId,
         baseAnalysis.layoutPlan ?? baseAnalysis.generatedLayoutPlan
       );
+      const visualizationPrompt =
+        parsed.visualizationBrief && typeof parsed.visualizationBrief === "object" && parsed.visualizationBrief !== null
+          ? (() => {
+              const candidate = parsed.visualizationBrief as { prompt?: unknown };
+              return typeof candidate.prompt === "string" ? candidate.prompt.trim() : "";
+            })()
+          : "";
       const generatedInfographicPrompt =
-        typeof parsed.infographicPrompt === "string"
+        typeof parsed.infographicPrompt === "string" && parsed.infographicPrompt.trim()
           ? parsed.infographicPrompt.trim()
-          : baseAnalysis.generatedInfographicPrompt ?? baseAnalysis.infographicPrompt ?? "";
-
-      const normalizedData: AnalysisData = {
+          : visualizationPrompt || baseAnalysis.generatedInfographicPrompt || baseAnalysis.infographicPrompt || "";
+      const rawAnalysis = {
+        ...baseAnalysis,
+        schemaVersion: parsed.schemaVersion === "3" ? "3" : "3",
         title:
           typeof parsed.title === "string" && parsed.title.trim()
             ? parsed.title.trim()
             : baseAnalysis.title || getDatasetTitle(session.fileName),
+        dataset: parsed.dataset,
+        sheetStructure: parsed.sheetStructure,
+        sourceInventory: parsed.sourceInventory,
+        findings: parsed.findings,
+        implications: parsed.implications,
+        cautions: parsed.cautions,
+        askNext: parsed.askNext,
+        visualizationBrief: parsed.visualizationBrief,
         summaries: normalizeSummaries(parsed.summaries),
         keywords: Array.isArray(parsed.keywords)
           ? parsed.keywords.filter((keyword): keyword is string => typeof keyword === "string" && keyword.trim().length > 0)
           : [],
         insights: typeof parsed.insights === "string" ? parsed.insights.trim() : "",
         issues: normalizeIssues(parsed.issues),
+        chartRecommendations,
         generatedLayoutPlans: normalizedLayoutPlans,
         selectedLayoutPlanId: selectedLayoutPlan?.id,
         generatedLayoutPlan: normalizedLayoutPlans?.[0] ?? selectedLayoutPlan,
@@ -822,8 +1099,12 @@ ${layoutPromptInstruction}`;
         infographicPrompt: generatedInfographicPrompt,
         tableData: baseAnalysis.tableData,
         tableContext: baseAnalysis.tableContext,
-        status: "complete",
+        status: "complete" as const,
       };
+      const normalizedData: AnalysisData = normalizeAnalysisData(
+        rawAnalysis,
+        baseAnalysis.title || getDatasetTitle(session.fileName)
+      );
 
       const updatedSession = { ...session, analysisData: normalizedData };
       await store.saveSession(updatedSession);
@@ -907,13 +1188,59 @@ ${layoutPromptInstruction}`;
     if (!session) return;
 
     const nextTableData = cloneTableData(draftTableData);
+    const syncedLogicalTables = nextTableData.logicalTables?.map((table) =>
+      table.id === nextTableData.primaryLogicalTableId || (!nextTableData.primaryLogicalTableId && table.id === nextTableData.logicalTables?.[0]?.id)
+        ? {
+            ...table,
+            columns: [...nextTableData.columns],
+            rows: nextTableData.rows.map((row) => [...row]),
+            rowCount: nextTableData.rowCount,
+            columnCount: nextTableData.columnCount,
+            normalizationNotes: nextTableData.normalizationNotes ? [...nextTableData.normalizationNotes] : undefined,
+          }
+        : table
+    );
+    if (syncedLogicalTables) {
+      nextTableData.logicalTables = syncedLogicalTables;
+    }
     const nextAnalysisData: AnalysisData = session.analysisData
-      ? {
-          ...session.analysisData,
-          tableData: nextTableData,
-          tableContext: buildTableContext(nextTableData),
-          status: "pending",
-        }
+      ? normalizeAnalysisData(
+          {
+            ...session.analysisData,
+            sheetStructure: buildInitialSheetStructure(session.fileName, nextTableData),
+            dataset: session.analysisData.dataset
+              ? {
+                  ...session.analysisData.dataset,
+                  tableCount: nextTableData.logicalTables?.length ?? (nextTableData.rowCount > 0 ? 1 : 0),
+                  sourceType: nextTableData.sourceType,
+                }
+              : undefined,
+            sourceInventory: session.analysisData.sourceInventory
+              ? {
+                  ...session.analysisData.sourceInventory,
+                  tables:
+                    session.analysisData.sourceInventory.tables.length > 0
+                      ? session.analysisData.sourceInventory.tables.map((table, index) =>
+                          index === 0
+                            ? {
+                                ...table,
+                                name: nextTableData.sheetName?.trim() || table.name,
+                                context: buildTableContext(nextTableData),
+                                dimensions: nextTableData.columns.slice(0, 2),
+                                metrics: nextTableData.columns.slice(2),
+                              }
+                            : table
+                        )
+                      : buildSourceInventory(session.fileName, nextTableData, buildTableContext(nextTableData)).tables,
+                }
+              : buildSourceInventory(session.fileName, nextTableData, buildTableContext(nextTableData)),
+            tableData: nextTableData,
+            tableContext: buildTableContext(nextTableData),
+            chartRecommendations: buildChartRecommendations(nextTableData),
+            status: "pending",
+          },
+          getDatasetTitle(session.fileName)
+        )
       : createPendingAnalysis(session.fileName, nextTableData);
 
     const updatedSession: TableSession = {

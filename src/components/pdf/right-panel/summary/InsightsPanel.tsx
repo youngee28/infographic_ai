@@ -3,6 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GoogleGenAI } from "@google/genai";
 import { useAppStore } from "@/lib/app-store";
+import {
+  getAnalysisTitle,
+  getAskNext,
+  getCautions,
+  getDatasetSummary,
+  getFindings,
+  getImplications,
+  getSourceTables,
+} from "@/lib/analysis-selectors";
 import { store } from "@/lib/store";
 import type { AnalysisData } from "@/lib/session-types";
 import { ChatInput } from "./ChatInput";
@@ -13,28 +22,18 @@ import { RightPanelAnalysis } from "./RightPanelAnalysis";
 const buildContextText = (analysisData: AnalysisData | null) => {
   if (!analysisData) return "";
 
-  const summaryLines = analysisData.summaries.flatMap((item) => item.lines?.map((line) => line.text) ?? []);
-  const keywordText = analysisData.keywords?.length
-    ? `\n- 키워드: ${analysisData.keywords.join(", ")}`
-    : "";
-  const summaryText = summaryLines.length
-    ? `\n- 요약: ${summaryLines.slice(0, 8).join(" | ")}`
-    : "";
-
-  const issueLines = Array.isArray(analysisData.issues)
-    ? analysisData.issues.map((item) => item.text).filter(Boolean)
-    : typeof analysisData.issues === "string"
-      ? [analysisData.issues]
-      : [];
-  const issueText = issueLines.length
-    ? `\n- 핵심 체크포인트: ${issueLines.slice(0, 5).join(" | ")}`
-    : "";
+  const tables = getSourceTables(analysisData);
+  const findingText = getFindings(analysisData).map((item) => item.text);
+  const implicationText = getImplications(analysisData).map((item) => item.text);
+  const cautionText = getCautions(analysisData).map((item) => item.text);
 
   return [
-    `데이터셋 제목: ${analysisData.title}`,
-    summaryText,
-    keywordText,
-    issueText,
+    `데이터셋 제목: ${getAnalysisTitle(analysisData)}`,
+    getDatasetSummary(analysisData) ? `요약: ${getDatasetSummary(analysisData)}` : "",
+    tables.length > 0 ? `표 구성: ${tables.map((table) => `${table.name}(${table.role})`).join(" | ")}` : "",
+    findingText.length > 0 ? `핵심 신호: ${findingText.slice(0, 5).join(" | ")}` : "",
+    implicationText.length > 0 ? `실무 시사점: ${implicationText.slice(0, 4).join(" | ")}` : "",
+    cautionText.length > 0 ? `해석상 유의점: ${cautionText.slice(0, 4).join(" | ")}` : "",
   ].join("\n").trim();
 };
 
@@ -131,6 +130,23 @@ export function InsightsPanel({ analysisData, isAnalyzing, sessionId, onCitation
               columns: session.tableData.columns,
               rowCount: session.tableData.rowCount,
               columnCount: session.tableData.columnCount,
+              primaryLogicalTableId: session.tableData.primaryLogicalTableId,
+              logicalTables: session.tableData.logicalTables?.map((table) => ({
+                id: table.id,
+                name: table.name,
+                orientation: table.orientation,
+                headerAxis: table.headerAxis,
+                bounds: {
+                  startRow: table.startRow,
+                  endRow: table.endRow,
+                  startCol: table.startCol,
+                  endCol: table.endCol,
+                },
+                columns: table.columns,
+                rowCount: table.rowCount,
+                columnCount: table.columnCount,
+                rows: table.rows.slice(0, 40),
+              })),
               rows: session.tableData.rows.slice(0, 120),
             },
             null,
@@ -215,6 +231,7 @@ export function InsightsPanel({ analysisData, isAnalyzing, sessionId, onCitation
           <ChatTimeline messages={messages} isTyping={isTyping} onCitationClick={onCitationClick} />
           <RecommendedQuestions
             insights={analysisData?.insights}
+            questions={getAskNext(analysisData)}
             onSelectQuestion={(q) => handleSendMessage(q)}
           />
           <div ref={chatBottomRef} />

@@ -1,8 +1,19 @@
 import type { AnalysisData } from "@/lib/session-types";
+import {
+  getCautionReferenceLines,
+  getFindingsSummaryVariant,
+  getImplicationsSummaryVariant,
+  getSourceTables,
+  getTableContextHighlights,
+  getTableRelations,
+  getVisualizationBrief,
+} from "@/lib/analysis-selectors";
 import { CheckPoints } from "./CheckPoints";
 import { DetailedSummary } from "./DetailedSummary";
-import { Keywords } from "./Keywords";
+import { SourceInventoryPanel } from "./SourceInventoryPanel";
+import { TableContextCaption } from "./TableContextCaption";
 import { ThreeLineSummary } from "./ThreeLineSummary";
+import { VisualizationBriefPanel } from "./VisualizationBriefPanel";
 
 interface RightPanelAnalysisProps {
   analysisData: AnalysisData;
@@ -10,12 +21,22 @@ interface RightPanelAnalysisProps {
 }
 
 export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanelAnalysisProps) {
+  const tables = getSourceTables(analysisData);
+  const relations = getTableRelations(analysisData);
+  const tableContextHighlights = getTableContextHighlights(analysisData);
+  const findingsSummary = getFindingsSummaryVariant(analysisData);
+  const implicationsSummary = getImplicationsSummaryVariant(analysisData);
+  const cautions = getCautionReferenceLines(analysisData);
+  const visualizationBrief = getVisualizationBrief(analysisData);
+
   return (
     <>
-      <Keywords keywords={analysisData.keywords} />
-      <ThreeLineSummary summary={analysisData.summaries[0]} onCitationClick={onCitationClick} />
-      <DetailedSummary summary={analysisData.summaries[1]} onCitationClick={onCitationClick} />
-      <CheckPoints issues={analysisData.issues} onCitationClick={onCitationClick} />
+      <SourceInventoryPanel tables={tables} relations={relations} />
+      <TableContextCaption lines={tableContextHighlights} />
+      <ThreeLineSummary summary={findingsSummary} onCitationClick={onCitationClick} />
+      <DetailedSummary summary={implicationsSummary} onCitationClick={onCitationClick} />
+      <CheckPoints issues={cautions} onCitationClick={onCitationClick} />
+      <VisualizationBriefPanel brief={visualizationBrief} />
     </>
   );
 }
