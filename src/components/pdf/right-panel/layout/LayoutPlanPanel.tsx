@@ -19,7 +19,7 @@ import {
 } from "chart.js";
 import Image from "next/image";
 import { GoogleGenAI } from "@google/genai";
-import { RotateCcw } from "lucide-react";
+import { GripVertical, RotateCcw } from "lucide-react";
 import { useAppStore } from "@/lib/app-store";
 import { getAnalysisTitle, getCautions, getFindings, getLegacyKeywordFallback, getVisualizationPrompt } from "@/lib/analysis-selectors";
 import { buildInfographicContext, extractGeneratedImageResult } from "@/lib/infographic-generation";
@@ -98,6 +98,8 @@ interface ActiveLayoutInteraction {
   origin?: LayoutGeometry;
   startClientX: number;
   startClientY: number;
+  surfaceWidth?: number;
+  surfaceHeight?: number;
   sectionId?: string;
   resizeDirection?: ResizeHandleDirection;
   apply?: (current: LayoutPlan, nextLayout: LayoutGeometry) => LayoutPlan;
@@ -269,6 +271,23 @@ function applyResizeDelta(origin: LayoutGeometry, deltaX: number, deltaY: number
   };
 }
 
+function resolveInteractionSurfaceMetrics(target: EventTarget | null): { width: number; height: number } | null {
+  if (!(target instanceof HTMLElement)) {
+    return null;
+  }
+
+  const frame = target.closest<HTMLElement>("[data-layout-frame='true']");
+  const surface = frame?.parentElement;
+  if (!surface) {
+    return null;
+  }
+
+  return {
+    width: surface.clientWidth,
+    height: surface.clientHeight,
+  };
+}
+
 function buildDefaultSectionLayouts(plan: LayoutPlan): Map<string, LayoutGeometry> {
   const editableSections = plan.sections.filter((section) => section.type !== "header");
   if (editableSections.length === 0) {
@@ -313,17 +332,29 @@ function buildDefaultSectionLayouts(plan: LayoutPlan): Map<string, LayoutGeometr
 
 function buildSectionTitleLayout(section: LayoutSection): LayoutGeometry {
   return section.type === "chart-group" || section.type === "kpi-group"
+    ? { x: 0, y: 0, width: 38, height: 14 }
+    : { x: 0, y: 0, width: 44, height: 14 };
+}
+
+function buildCompactSectionTitleLayout(section: LayoutSection): LayoutGeometry {
+  return section.type === "chart-group" || section.type === "kpi-group"
+    ? { x: 0, y: 0, width: 58, height: 9 }
+    : { x: 0, y: 0, width: 62, height: 10 };
+}
+
+function buildLegacySectionTitleLayout(section: LayoutSection): LayoutGeometry {
+  return section.type === "chart-group" || section.type === "kpi-group"
     ? { x: 0, y: 0, width: 64, height: 12 }
     : { x: 0, y: 0, width: 70, height: 14 };
 }
 
 function buildSectionNoteLayout(): LayoutGeometry {
-  return { x: 0, y: 18, width: 100, height: 72 };
+  return { x: 0, y: 14, width: 100, height: 76 };
 }
 
 function buildDefaultChartLayouts(chartCount: number, aspectRatio: LayoutPlan["aspectRatio"]): LayoutGeometry[] {
-  const y = 16;
-  const availableHeight = 82;
+  const y = 14;
+  const availableHeight = 84;
   if (chartCount <= 1 || aspectRatio === "portrait") {
     const gap = 3;
     const height = (availableHeight - gap * Math.max(chartCount - 1, 0)) / Math.max(chartCount, 1);
@@ -350,10 +381,18 @@ function buildDefaultKpiLayouts(itemCount: number): LayoutGeometry[] {
   const width = (100 - gap * Math.max(count - 1, 0)) / count;
   return Array.from({ length: itemCount }, (_, index) => ({
     x: index * (width + gap),
-    y: 16,
+    y: 14,
     width,
-    height: 66,
+    height: 68,
   }));
+}
+
+function isSameLayout(left: LayoutGeometry | undefined, right: LayoutGeometry): boolean {
+  if (!left) {
+    return false;
+  }
+
+  return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height;
 }
 
 function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | null {
@@ -362,18 +401,36 @@ function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | 
 
   const previewContext = buildPreviewDataContext(undefined);
   const defaultLayouts = buildDefaultSectionLayouts(cloned);
-  cloned.headerTitleLayout = cloned.headerTitleLayout ?? { x: 0, y: 0, width: 72, height: 34 };
-  cloned.headerSummaryLayout = cloned.headerSummaryLayout ?? { x: 0, y: 40, width: 72, height: 44 };
+  const defaultHeaderTitleLayout = { x: 0, y: 0, width: 58, height: 34 };
+  const defaultHeaderSummaryLayout = { x: 0, y: 38, width: 64, height: 24 };
+  const compactHeaderTitleLayout = { x: 0, y: 0, width: 70, height: 24 };
+  const compactHeaderSummaryLayout = { x: 0, y: 28, width: 78, height: 28 };
+  const legacyHeaderTitleLayout = { x: 0, y: 0, width: 72, height: 34 };
+  const legacyHeaderSummaryLayout = { x: 0, y: 40, width: 72, height: 44 };
+  cloned.headerTitleLayout = !cloned.headerTitleLayout || isSameLayout(cloned.headerTitleLayout, legacyHeaderTitleLayout) || isSameLayout(cloned.headerTitleLayout, compactHeaderTitleLayout)
+    ? defaultHeaderTitleLayout
+    : cloned.headerTitleLayout;
+  cloned.headerSummaryLayout = !cloned.headerSummaryLayout || isSameLayout(cloned.headerSummaryLayout, legacyHeaderSummaryLayout) || isSameLayout(cloned.headerSummaryLayout, compactHeaderSummaryLayout)
+    ? defaultHeaderSummaryLayout
+    : cloned.headerSummaryLayout;
   cloned.sections = cloned.sections.map((rawSection) => {
     const section = ensureSectionItems(rawSection, previewContext);
     const chartLayouts = section.charts ? buildDefaultChartLayouts(section.charts.length, cloned.aspectRatio) : [];
     const itemLayouts = section.items ? buildDefaultKpiLayouts(section.items.length) : [];
+    const defaultTitleLayout = section.type === "header" ? undefined : buildSectionTitleLayout(section);
+    const legacyTitleLayout = section.type === "header" ? undefined : buildLegacySectionTitleLayout(section);
+    const compactTitleLayout = section.type === "header" ? undefined : buildCompactSectionTitleLayout(section);
     return {
       ...section,
       layout: section.type === "header"
         ? section.layout
         : section.layout ?? defaultLayouts.get(section.id),
-      titleLayout: section.titleLayout ?? (section.type === "header" ? undefined : buildSectionTitleLayout(section)),
+      titleLayout:
+        section.type === "header"
+          ? undefined
+          : !section.titleLayout || (legacyTitleLayout && isSameLayout(section.titleLayout, legacyTitleLayout)) || (compactTitleLayout && isSameLayout(section.titleLayout, compactTitleLayout))
+            ? defaultTitleLayout
+            : section.titleLayout,
       noteLayout: section.noteLayout ?? (section.type === "takeaway" || section.type === "note" ? buildSectionNoteLayout() : undefined),
       charts: section.charts?.map((chart, chartIndex) => ({
         ...chart,
@@ -1506,7 +1563,7 @@ function HtmlChartCard({
   goalContent?: React.ReactNode;
 }) {
   return (
-    <article className={`rounded-[18px] border border-slate-200/80 bg-white shadow-[0_12px_32px_rgba(15,23,42,0.06)] ${compact ? "px-3 py-3" : "px-4 py-4"}`}>
+    <article className={`h-full rounded-[18px] border border-slate-200/80 bg-white shadow-[0_12px_32px_rgba(15,23,42,0.06)] ${compact ? "px-3 py-3" : "px-4 py-4"}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-[12px] font-semibold text-slate-900">{titleContent ?? chart.title}</div>
@@ -1731,10 +1788,35 @@ function EditableTextSlot({
         event.stopPropagation();
         startEditing();
       }}
-      className={`block min-w-0 max-w-full overflow-auto whitespace-pre-wrap break-words custom-scrollbar ${multiline ? "h-full min-h-0" : ""} ${displayClassName} ${editable ? "rounded-md px-1.5 py-1 transition-colors" : ""} ${selected ? "bg-blue-50/80 text-slate-900 shadow-[0_0_0_2px_rgba(59,130,246,0.35)]" : editable ? "hover:bg-slate-100/80" : ""}`}
+      className={`block min-w-0 max-w-full overflow-auto whitespace-pre-wrap break-words custom-scrollbar ${multiline ? "h-full min-h-0" : ""} ${displayClassName} ${editable ? "rounded-md px-1.5 py-1 transition-colors" : ""} ${selected ? "bg-blue-50/80 text-slate-900" : editable ? "hover:bg-slate-100/80" : ""}`}
     >
       {resolvedValue || <span className="text-slate-300">{placeholder}</span>}
     </button>
+  );
+}
+
+function LayoutMoveToolbar({
+  ariaLabel,
+  selected = false,
+  onPointerDown,
+}: {
+  ariaLabel: string;
+  selected?: boolean;
+  onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <div
+      className={`absolute left-1/2 top-0 z-40 -translate-x-1/2 -translate-y-[130%] transition-opacity duration-150 ${selected ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100"}`}
+    >
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        className={`flex h-7 w-7 cursor-grab items-center justify-center rounded-full border shadow-sm backdrop-blur-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200 ${selected ? "border-blue-200 bg-white text-blue-700 shadow-[0_8px_18px_rgba(59,130,246,0.18)]" : "border-slate-200 bg-white/95 text-slate-500 hover:border-slate-300 hover:text-slate-700"}`}
+        onPointerDown={onPointerDown}
+      >
+        <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 
@@ -1755,53 +1837,49 @@ function LayoutObjectFrame({
   editable: boolean;
   selected?: boolean;
   onSelect?: (id: string | null) => void;
-  onStartInteraction?: (type: "drag" | "resize", event: React.PointerEvent, origin: LayoutGeometry, resizeDirection?: ResizeHandleDirection) => void;
+  onStartInteraction?: (type: "drag" | "resize", event: React.PointerEvent, origin: LayoutGeometry, resizeDirection?: ResizeHandleDirection, surfaceMetrics?: { width: number; height: number }) => void;
   children: React.ReactNode;
   className?: string;
 }) {
   return (
     <div
       style={{ left: `${layout.x}%`, top: `${layout.y}%`, width: `${layout.width}%`, height: `${layout.height}%` }}
-      className={`group absolute overflow-visible rounded-[14px] ${selected ? "z-10" : ""}`}
+      className={`group absolute overflow-visible rounded-[14px] ${selected ? "z-20" : "hover:z-10"}`}
+      data-layout-frame="true"
       onClick={(event) => {
         event.stopPropagation();
         onSelect?.(id);
       }}
     >
-      <div className={`absolute inset-0 overflow-hidden rounded-[14px] ${className}`}>{children}</div>
+      <div className={`absolute inset-[3px] overflow-hidden rounded-[12px] ${className}`}>{children}</div>
       {editable && (
         <>
           <div
-            className={`pointer-events-none absolute inset-0 rounded-[14px] border transition-[border-color,box-shadow] ${selected ? "border-blue-500 shadow-[0_0_0_3px_rgba(59,130,246,0.18)]" : "border-dashed border-slate-300/80 group-hover:border-blue-300/80"}`}
+            className={`pointer-events-none absolute inset-0 rounded-[14px] border transition-[border-color,box-shadow] ${selected ? "border-transparent shadow-[inset_0_0_0_2px_rgba(59,130,246,0.95),0_0_0_5px_rgba(59,130,246,0.16)]" : "border-dashed border-slate-300/80 group-hover:border-blue-300/80"}`}
           />
-          <button
-            type="button"
-            aria-label={`${label} 이동`}
-            className={`absolute right-1.5 top-1.5 z-20 flex h-5 min-w-[42px] cursor-grab items-center justify-center rounded-full border px-2 text-[9px] font-medium shadow-sm transition-colors ${selected ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-700"}`}
+          <LayoutMoveToolbar
+            ariaLabel={`${label} 이동`}
+            selected={selected}
             onPointerDown={(event) => {
               event.stopPropagation();
+              const surfaceMetrics = resolveInteractionSurfaceMetrics(event.currentTarget);
               onSelect?.(id);
-              onStartInteraction?.("drag", event, layout);
+              onStartInteraction?.("drag", event, layout, undefined, surfaceMetrics ?? undefined);
             }}
-          >
-            이동
-          </button>
+          />
           {RESIZE_HANDLE_DEFINITIONS.map((handle) => (
-            <div key={handle.direction}>
-              <button
-                type="button"
-                aria-label={`${label} ${handle.ariaLabelSuffix} 크기 조절`}
-                className={`absolute z-20 rounded-[8px] bg-transparent ${handle.hitAreaClassName} ${handle.cursorClassName}`}
-                onPointerDown={(event) => {
-                  event.stopPropagation();
-                  onSelect?.(id);
-                  onStartInteraction?.("resize", event, layout, handle.direction);
-                }}
-              />
-              <span
-                className={`pointer-events-none absolute z-10 border-blue-400/90 transition-opacity ${handle.indicatorClassName} ${selected ? "opacity-100" : "opacity-0 group-hover:opacity-80"}`}
-              />
-            </div>
+            <button
+              key={handle.direction}
+              type="button"
+              aria-label={`${label} ${handle.ariaLabelSuffix} 크기 조절`}
+              className={`absolute z-20 rounded-[8px] bg-transparent ${handle.hitAreaClassName} ${handle.cursorClassName}`}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                const surfaceMetrics = resolveInteractionSurfaceMetrics(event.currentTarget);
+                onSelect?.(id);
+                onStartInteraction?.("resize", event, layout, handle.direction, surfaceMetrics ?? undefined);
+              }}
+            />
           ))}
         </>
       )}
@@ -1840,7 +1918,7 @@ function HtmlSectionPreview({
   onCancelEditing?: () => void;
   onCommitEditing?: (id: string, value: string) => void;
   onPlanChange?: (updater: (current: LayoutPlan) => LayoutPlan, options?: { persist?: boolean }) => void;
-  onStartLayoutInteraction?: (type: "drag" | "resize", event: React.PointerEvent, origin: LayoutGeometry, apply: (current: LayoutPlan, nextLayout: LayoutGeometry) => LayoutPlan, resizeDirection?: ResizeHandleDirection) => void;
+  onStartLayoutInteraction?: (type: "drag" | "resize", event: React.PointerEvent, origin: LayoutGeometry, apply: (current: LayoutPlan, nextLayout: LayoutGeometry) => LayoutPlan, resizeDirection?: ResizeHandleDirection, surfaceMetrics?: { width: number; height: number }) => void;
 }) {
   if (section.type === "header") {
     return null;
@@ -1866,9 +1944,9 @@ function HtmlSectionPreview({
             editable={editable}
             selected={isSelectedLayoutElement(selectedElementId, titleId)}
             onSelect={onSelectElement}
-            onStartInteraction={(type, event, origin, resizeDirection) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateSectionLayoutField(current, section.id, "titleLayout", nextLayout), resizeDirection)}
+            onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateSectionLayoutField(current, section.id, "titleLayout", nextLayout), resizeDirection, surfaceMetrics)}
           >
-            <div className="h-full rounded-[14px] bg-white/90 p-2 pt-5">
+            <div className="h-full rounded-[14px] bg-white/90 px-0.5 py-0">
               <EditableTextSlot
                 id={titleId}
                 value={section.title || SECTION_TYPE_LABELS[section.type]}
@@ -1899,10 +1977,9 @@ function HtmlSectionPreview({
                 editable={editable}
                 selected={isSelectedLayoutElement(selectedElementId, `${chart.id}-card`, chartTitleId, chartGoalId)}
                 onSelect={onSelectElement}
-                onStartInteraction={(type, event, origin, resizeDirection) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateChartLayout(current, section.id, chart.id, nextLayout), resizeDirection)}
-                className="bg-white"
+                onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateChartLayout(current, section.id, chart.id, nextLayout), resizeDirection, surfaceMetrics)}
               >
-                <div className="h-full rounded-[18px] bg-white p-3 pt-5 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+                <div className="h-full px-2 py-2">
                   <HtmlChartCard
                     chart={chart}
                     preview={buildPreparedPreviewChart(chart, previewDataContext)}
@@ -1959,7 +2036,7 @@ function HtmlSectionPreview({
       );
     }
     return (
-      <section className="space-y-2.5 h-full">
+      <section className="space-y-2.5">
         <div className="flex items-center justify-between gap-2">
           <EditableTextSlot
             id={titleId}
@@ -2051,9 +2128,9 @@ function HtmlSectionPreview({
             editable={editable}
             selected={isSelectedLayoutElement(selectedElementId, titleId)}
             onSelect={onSelectElement}
-            onStartInteraction={(type, event, origin, resizeDirection) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateSectionLayoutField(current, section.id, "titleLayout", nextLayout), resizeDirection)}
+            onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateSectionLayoutField(current, section.id, "titleLayout", nextLayout), resizeDirection, surfaceMetrics)}
           >
-            <div className="h-full rounded-[14px] bg-white/90 p-2 pt-5">
+            <div className="h-full rounded-[14px] bg-white/90 px-0.5 py-0">
               <EditableTextSlot
                 id={titleId}
                 value={section.title || SECTION_TYPE_LABELS[section.type]}
@@ -2085,10 +2162,9 @@ function HtmlSectionPreview({
                 editable={editable}
                 selected={isSelectedLayoutElement(selectedElementId, `${item.id}-card`, labelId, valueId)}
                 onSelect={onSelectElement}
-                onStartInteraction={(type, event, origin, resizeDirection) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateItemLayout(current, section.id, item.id, nextLayout), resizeDirection)}
-                className="bg-white"
+                onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateItemLayout(current, section.id, item.id, nextLayout), resizeDirection, surfaceMetrics)}
               >
-                <div className="h-full rounded-[16px] border border-slate-200 bg-white px-3 pb-3.5 pt-5 shadow-[0_12px_24px_rgba(15,23,42,0.05)]">
+                <div className="h-full rounded-[16px] border border-slate-200 bg-white px-3 pb-2.5 pt-2 shadow-[0_12px_24px_rgba(15,23,42,0.05)]">
                   <EditableTextSlot
                     id={labelId}
                     value={item.label}
@@ -2142,7 +2218,7 @@ function HtmlSectionPreview({
       );
     }
     return (
-      <section className="space-y-2.5 h-full">
+      <section className="space-y-2.5">
         <div className="flex items-center justify-between gap-2">
           <EditableTextSlot
             id={titleId}
@@ -2249,9 +2325,9 @@ function HtmlSectionPreview({
           editable={editable}
           selected={isSelectedLayoutElement(selectedElementId, titleId)}
           onSelect={onSelectElement}
-          onStartInteraction={(type, event, origin, resizeDirection) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateSectionLayoutField(current, section.id, "titleLayout", nextLayout), resizeDirection)}
+          onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateSectionLayoutField(current, section.id, "titleLayout", nextLayout), resizeDirection, surfaceMetrics)}
         >
-          <div className="h-full rounded-[14px] bg-white/90 p-2 pt-5">
+            <div className="h-full rounded-[14px] bg-white/90 px-0.5 py-0">
             <EditableTextSlot
               id={titleId}
               value={section.title || SECTION_TYPE_LABELS[section.type]}
@@ -2276,9 +2352,9 @@ function HtmlSectionPreview({
           editable={editable}
           selected={isSelectedLayoutElement(selectedElementId, noteId)}
           onSelect={onSelectElement}
-          onStartInteraction={(type, event, origin, resizeDirection) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateSectionLayoutField(current, section.id, "noteLayout", nextLayout), resizeDirection)}
+          onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateSectionLayoutField(current, section.id, "noteLayout", nextLayout), resizeDirection, surfaceMetrics)}
         >
-          <div className="h-full rounded-[18px] border border-slate-200/80 bg-white px-3 pb-3 pt-5 shadow-[0_12px_24px_rgba(15,23,42,0.05)]">
+          <div className="h-full rounded-[18px] border border-slate-200/80 bg-white px-3 pb-2.5 pt-2 shadow-[0_12px_24px_rgba(15,23,42,0.05)]">
             <EditableTextSlot
               id={noteId}
               value={noteText}
@@ -2302,7 +2378,7 @@ function HtmlSectionPreview({
           </div>
         </LayoutObjectFrame>
       </section>
-    ) : <section className="rounded-[18px] border border-slate-200/80 bg-white px-3 py-3 shadow-[0_12px_24px_rgba(15,23,42,0.05)] h-full">
+    ) : <section className="rounded-[18px] border border-slate-200/80 bg-white px-3 py-3 shadow-[0_12px_24px_rgba(15,23,42,0.05)]">
       <div className="flex items-center justify-between gap-2">
         <EditableTextSlot
           id={titleId}
@@ -2398,8 +2474,10 @@ function LayoutHtmlPreview({
 
       const { origin, apply } = activeInteraction;
 
-      const deltaX = ((event.clientX - activeInteraction.startClientX) / canvasSize.width) * 100;
-      const deltaY = ((event.clientY - activeInteraction.startClientY) / canvasSize.height) * 100;
+      const interactionWidth = activeInteraction.surfaceWidth ?? canvasSize.width;
+      const interactionHeight = activeInteraction.surfaceHeight ?? canvasSize.height;
+      const deltaX = ((event.clientX - activeInteraction.startClientX) / interactionWidth) * 100;
+      const deltaY = ((event.clientY - activeInteraction.startClientY) / interactionHeight) * 100;
       const nextLayout =
         activeInteraction.type === "drag"
           ? {
@@ -2436,8 +2514,10 @@ function LayoutHtmlPreview({
 
       const { origin, apply } = activeInteraction;
 
-      const deltaX = ((event.clientX - activeInteraction.startClientX) / canvasSize.width) * 100;
-      const deltaY = ((event.clientY - activeInteraction.startClientY) / canvasSize.height) * 100;
+      const interactionWidth = activeInteraction.surfaceWidth ?? canvasSize.width;
+      const interactionHeight = activeInteraction.surfaceHeight ?? canvasSize.height;
+      const deltaX = ((event.clientX - activeInteraction.startClientX) / interactionWidth) * 100;
+      const deltaY = ((event.clientY - activeInteraction.startClientY) / interactionHeight) * 100;
       const nextLayout =
         activeInteraction.type === "drag"
           ? {
@@ -2476,12 +2556,12 @@ function LayoutHtmlPreview({
 
   return (
     <div className="overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.08)]">
-      <div className="border-b border-slate-200 bg-[linear-gradient(135deg,rgba(248,250,252,0.95)_0%,rgba(255,255,255,1)_58%,rgba(241,245,249,1)_100%)] px-4 py-4">
+      <div className="border-b border-slate-200 bg-[linear-gradient(135deg,rgba(248,250,252,0.95)_0%,rgba(255,255,255,1)_58%,rgba(241,245,249,1)_100%)] px-4 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Deterministic HTML Preview</p>
             {editable && plan.headerTitleLayout && plan.headerSummaryLayout ? (
-              <div className="relative mt-1 h-[94px]">
+              <div className="relative mt-1 h-[68px] overflow-visible">
                 <LayoutObjectFrame
                   id={`${plan.id}-header-title`}
                   label="제목"
@@ -2489,16 +2569,18 @@ function LayoutHtmlPreview({
                   editable={editable}
                   selected={isSelectedLayoutElement(selectedElementId, `${plan.id}-header-title`)}
                   onSelect={onSelectElement}
-                  onStartInteraction={(type, event, origin, resizeDirection) => setActiveInteraction({
+                  onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => setActiveInteraction({
                     type,
                     origin,
                     startClientX: event.clientX,
                     startClientY: event.clientY,
+                    surfaceWidth: surfaceMetrics?.width,
+                    surfaceHeight: surfaceMetrics?.height,
                     resizeDirection,
                     apply: (current: LayoutPlan, nextLayout: LayoutGeometry) => updatePlanLayoutField(current, "headerTitleLayout", nextLayout),
                   })}
                 >
-                  <div className="h-full rounded-[14px] bg-white/80 p-2 pt-5">
+                  <div className="h-full rounded-[14px] bg-white/80 px-0.5 py-0">
                     <EditableTextSlot
                       id={`${plan.id}-header-title`}
                       value={title}
@@ -2533,16 +2615,18 @@ function LayoutHtmlPreview({
                   editable={editable}
                   selected={isSelectedLayoutElement(selectedElementId, `${plan.id}-header-summary`)}
                   onSelect={onSelectElement}
-                  onStartInteraction={(type, event, origin, resizeDirection) => setActiveInteraction({
+                  onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => setActiveInteraction({
                     type,
                     origin,
                     startClientX: event.clientX,
                     startClientY: event.clientY,
+                    surfaceWidth: surfaceMetrics?.width,
+                    surfaceHeight: surfaceMetrics?.height,
                     resizeDirection,
                     apply: (current: LayoutPlan, nextLayout: LayoutGeometry) => updatePlanLayoutField(current, "headerSummaryLayout", nextLayout),
                   })}
                 >
-                  <div className="h-full rounded-[14px] bg-white/70 p-2 pt-5">
+                  <div className="h-full rounded-[14px] bg-white/70 px-0.5 py-0">
                     <EditableTextSlot
                       id={`${plan.id}-header-summary`}
                       value={summaryText}
@@ -2552,7 +2636,7 @@ function LayoutHtmlPreview({
                       selected={selectedElementId === `${plan.id}-header-summary`}
                       editingField={editingField}
                       displayClassName="w-full text-left text-[11px] leading-relaxed text-slate-500"
-                      inputClassName="min-h-[74px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] leading-relaxed text-slate-600 outline-none ring-2 ring-blue-100"
+                      inputClassName="min-h-[40px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] leading-relaxed text-slate-600 outline-none ring-2 ring-blue-100"
                       onSelect={onSelectElement ?? (() => undefined)}
                       onStartEditing={onStartEditing}
                       onChange={onChangeEditingValue}
@@ -2601,7 +2685,7 @@ function LayoutHtmlPreview({
                   selected={selectedElementId === `${plan.id}-header-summary`}
                   editingField={editingField}
                   displayClassName="mt-2 w-full text-left text-[11px] leading-relaxed text-slate-500"
-                  inputClassName="mt-2 min-h-[74px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] leading-relaxed text-slate-600 outline-none ring-2 ring-blue-100"
+                  inputClassName="mt-2 min-h-[56px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] leading-relaxed text-slate-600 outline-none ring-2 ring-blue-100"
                   onSelect={onSelectElement ?? (() => undefined)}
                   onStartEditing={onStartEditing}
                   onChange={onChangeEditingValue}
@@ -2620,14 +2704,8 @@ function LayoutHtmlPreview({
           </div>
         </div>
       </div>
-      {editable && (
-        <div className="border-t border-slate-200/80 bg-blue-50/70 px-4 py-2.5 text-[10px] leading-relaxed text-blue-700">
-          파란 테두리는 현재 선택된 박스입니다. 이동 버튼으로 위치를 옮기고, 가장자리나 모서리를 드래그해서 크기를 조절할 수 있습니다.
-        </div>
-      )}
-
       <div className={`bg-[radial-gradient(circle_at_top_left,rgba(226,232,240,0.7),transparent_32%),linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] ${compact ? "p-3" : "p-4"}`} style={{ aspectRatio: PREVIEW_ASPECT_RATIOS[plan.aspectRatio] }}>
-        <div ref={canvasRef} className={`relative h-full overflow-hidden rounded-[18px] ${editable ? "border border-dashed border-slate-200/80 bg-white/45" : ""}`}>
+        <div ref={canvasRef} className={`relative h-full rounded-[18px] ${editable ? "overflow-visible border border-dashed border-slate-200/80 bg-white/45" : "overflow-hidden"}`}>
           {editable ? (
             plan.sections.filter((section) => section.type !== "header").map((section) => {
               const layout = section.layout;
@@ -2639,19 +2717,18 @@ function LayoutHtmlPreview({
                 <div
                   key={section.id}
                   style={{ left: `${layout.x}%`, top: `${layout.y}%`, width: `${layout.width}%`, height: `${layout.height}%` }}
-                  className={`group absolute overflow-hidden rounded-[20px] p-2 transition-shadow ${isDraggingSection || isSelectedSection ? "z-10" : ""} ${isDraggingSection ? "shadow-[0_18px_36px_rgba(15,23,42,0.12)]" : "shadow-[0_12px_28px_rgba(15,23,42,0.08)]"}`}
+                  className={`group absolute overflow-visible rounded-[20px] p-1.5 transition-shadow ${isDraggingSection || isSelectedSection ? "z-20" : "hover:z-10"} ${isDraggingSection ? "shadow-[0_18px_36px_rgba(15,23,42,0.12)]" : "shadow-[0_12px_28px_rgba(15,23,42,0.08)]"}`}
                   onClick={(event) => {
                     event.stopPropagation();
                     onSelectElement?.(sectionId);
                   }}
                 >
                   <div
-                    className={`pointer-events-none absolute inset-0 rounded-[20px] border transition-[border-color,box-shadow] ${isSelectedSection ? "border-blue-500 shadow-[0_0_0_3px_rgba(59,130,246,0.16)]" : "border-transparent group-hover:border-blue-200/80"}`}
+                    className={`pointer-events-none absolute inset-0 rounded-[20px] border transition-[border-color,box-shadow] ${isSelectedSection ? "border-transparent shadow-[inset_0_0_0_2px_rgba(59,130,246,0.9),0_0_0_5px_rgba(59,130,246,0.14)]" : "border-transparent group-hover:border-blue-200/80"}`}
                   />
-                  <button
-                    type="button"
-                    aria-label={`${section.title || SECTION_TYPE_LABELS[section.type]} 영역 이동`}
-                    className={`absolute left-1/2 top-3 z-20 flex h-5 min-w-[76px] -translate-x-1/2 cursor-grab items-center justify-center rounded-full border px-2 text-[9px] font-medium shadow-sm transition-colors ${isSelectedSection ? "border-blue-200 bg-blue-50 text-blue-700" : "border-slate-200 bg-white/95 text-slate-500 hover:border-slate-300 hover:text-slate-700"}`}
+                  <LayoutMoveToolbar
+                    ariaLabel={`${section.title || SECTION_TYPE_LABELS[section.type]} 영역 이동`}
+                    selected={isSelectedSection}
                     onPointerDown={(event) => {
                       event.stopPropagation();
                       onSelectElement?.(sectionId);
@@ -2662,10 +2739,8 @@ function LayoutHtmlPreview({
                         sectionId: section.id,
                       });
                     }}
-                  >
-                    영역 이동
-                  </button>
-                  <div className="h-full overflow-auto rounded-[18px] bg-white/88 p-3 pt-7 custom-scrollbar">
+                  />
+                  <div className="h-full overflow-auto rounded-[18px] bg-white/88 p-3 custom-scrollbar">
                     <HtmlSectionPreview
                       plan={plan}
                       section={section}
@@ -2681,12 +2756,14 @@ function LayoutHtmlPreview({
                       onCancelEditing={onCancelEditing}
                       onCommitEditing={onCommitEditing}
                       onPlanChange={onPlanChange}
-                      onStartLayoutInteraction={(type, event, origin, apply, resizeDirection) => {
+                      onStartLayoutInteraction={(type, event, origin, apply, resizeDirection, surfaceMetrics) => {
                         setActiveInteraction({
                           type,
                           origin,
                           startClientX: event.clientX,
                           startClientY: event.clientY,
+                          surfaceWidth: surfaceMetrics?.width,
+                          surfaceHeight: surfaceMetrics?.height,
                           resizeDirection,
                           apply,
                         });

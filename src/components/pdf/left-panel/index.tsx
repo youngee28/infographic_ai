@@ -1,6 +1,7 @@
 "use client";
 
 import type { AnalysisData } from "@/lib/session-types";
+import type { RawSheetGrid } from "@/lib/session-types";
 import type { TableData } from "@/lib/table-utils";
 import { TablePreview } from "./TablePreview";
 
@@ -10,6 +11,7 @@ interface LeftPanelProps {
   pageNumber?: number;
   analysisData?: AnalysisData | null;
   tableData?: TableData | null;
+  rawSheetGrid?: RawSheetGrid | null;
   isTableDirty?: boolean;
   isApplyTableEditsDisabled?: boolean;
   isResetTableEditsDisabled?: boolean;
@@ -25,6 +27,7 @@ export function LeftPanel({
   fileUrl,
   analysisData,
   tableData,
+  rawSheetGrid,
   isTableDirty,
   isApplyTableEditsDisabled,
   isResetTableEditsDisabled,
@@ -42,6 +45,7 @@ export function LeftPanel({
       rawFileName={rawFileName}
       summaries={analysisData?.summaries}
       tableData={tableData ?? analysisData?.tableData}
+      rawSheetGrid={rawSheetGrid}
       isAnalyzing={analysisData?.status !== "complete"}
       isDirty={isTableDirty}
       isApplyTableEditsDisabled={isApplyTableEditsDisabled}

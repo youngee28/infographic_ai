@@ -18,10 +18,11 @@ import type {
   LayoutChartType,
   LayoutPlan,
   LayoutSectionType,
+  RawSheetGrid,
   ReferenceLine,
   SummaryVariant,
 } from "@/lib/session-types";
-import { parseRawGridBase64, serializeRawGridForGemini } from "@/lib/table-parser";
+import { parseRawGridBase64, parseRawGridFile, serializeRawGridForGemini } from "@/lib/table-parser";
 import {
   buildTableContext,
   getDatasetTitle,
@@ -591,6 +592,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
   const layoutSystemPrompt = useAppStore((state) => state.layoutSystemPrompt);
   const selectedLayoutModel = useAppStore((state) => state.selectedLayoutModel);
   const [sessions, setSessions] = useState<TableSession[]>([]);
+  const [currentRawSheetGrid, setCurrentRawSheetGrid] = useState<RawSheetGrid | null>(null);
   const [persistedTableData, setPersistedTableData] = useState<TableData | null>(null);
   const [draftTableData, setDraftTableData] = useState<TableData | null>(null);
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
@@ -677,6 +679,17 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     return { session, analysis: seededAnalysis };
   };
 
+  const hydrateSessionRawSheetGrid = async (session: TableSession): Promise<RawSheetGrid | null> => {
+    if (session.rawSheetGrid) return session.rawSheetGrid;
+    if (!session.fileBase64) return null;
+
+    try {
+      return await parseRawGridBase64(session.fileBase64, session.fileName);
+    } catch {
+      return null;
+    }
+  };
+
   const handleFileUpload = async (file: File) => {
     const key = localStorage.getItem("gemini_api_key");
     if (!key) {
@@ -687,7 +700,11 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
 
     setIsAnalyzing(true);
     try {
-      const [tableData, base64Data] = await Promise.all([parseTableFile(file, { apiKey: key }), readFileAsBase64(file)]);
+      const [tableData, rawSheetGrid, base64Data] = await Promise.all([
+        parseTableFile(file, { apiKey: key }),
+        parseRawGridFile(file),
+        readFileAsBase64(file),
+      ]);
       const fileType = tableData.sourceType ?? (file.name.toLowerCase().endsWith(".xlsx") ? "xlsx" : "csv");
       const pendingAnalysis = createPendingAnalysis(file.name, tableData);
 
@@ -696,6 +713,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
         fileName: file.name,
         fileType,
         fileBase64: base64Data,
+        rawSheetGrid,
         tableData,
         analysisData: pendingAnalysis,
         messages: [],
@@ -704,6 +722,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
 
       await store.saveSession(newSession);
       await loadSessions();
+      setCurrentRawSheetGrid(rawSheetGrid);
       await handleSelectSession(newSession.id);
     } catch (error) {
       console.error(error);
@@ -721,6 +740,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     setAnalysisData(null);
     setPersistedTableData(null);
     setDraftTableData(null);
+    setCurrentRawSheetGrid(null);
     setCurrentSessionId(null);
     setCurrentFileName(undefined);
     setPageNumber(1);
@@ -744,11 +764,13 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     }
 
     const { session: hydratedSession, analysis } = await hydrateSessionAnalysis(session);
+    const rawSheetGrid = await hydrateSessionRawSheetGrid(hydratedSession);
 
     setFileUrl(`session://${hydratedSession.id}`);
     setCurrentSessionId(hydratedSession.id);
     setCurrentFileName(hydratedSession.fileName);
     setAnalysisData(analysis);
+    setCurrentRawSheetGrid(rawSheetGrid);
     setPersistedTableData(analysis.tableData ? cloneTableData(analysis.tableData) : null);
     setDraftTableData(analysis.tableData ? cloneTableData(analysis.tableData) : null);
 
@@ -1352,6 +1374,7 @@ ${layoutPromptInstruction}`;
                   pageNumber={pageNumber}
                   analysisData={analysisData}
                   tableData={draftTableData}
+                  rawSheetGrid={currentRawSheetGrid}
                   isTableDirty={isTableDirty}
                   isApplyTableEditsDisabled={!isTableDirty || isAnalyzing}
                   isResetTableEditsDisabled={!isTableDirty}

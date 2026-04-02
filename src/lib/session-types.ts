@@ -61,12 +61,36 @@ export interface AnalysisStructuredTable {
   dimensions: string[];
   metrics: string[];
   notes?: string[];
+  needsReview?: boolean;
+  reviewReasons?: string[];
+  candidates?: Array<{
+    range: {
+      startRow: number;
+      endRow: number;
+      startCol: number;
+      endCol: number;
+    };
+    structure: AnalysisTableStructureKind;
+    confidence: number;
+    reason?: string;
+  }>;
 }
 
 export interface AnalysisSheetStructure {
   sheetName?: string;
   tableCount: number;
+  needsReview?: boolean;
+  reviewReason?: string;
   tables: AnalysisStructuredTable[];
+}
+
+export interface TableInterpretationResult {
+  tableId: string;
+  findings: NarrativeItem[];
+  implications: NarrativeItem[];
+  cautions: NarrativeItem[];
+  layoutPlans?: LayoutPlan[];
+  infographicPrompt?: string;
 }
 
 export type LogicalTableSource = "detected" | "sheet";
@@ -230,6 +254,8 @@ export interface AnalysisData {
   infographicPrompt?: string;
   tableContext?: string;
   tableData?: NormalizedTable;
+  reviewReasons?: string[];
+  tableInterpretations?: TableInterpretationResult[];
   status?: "pending" | "complete";
 }
 
@@ -245,6 +271,14 @@ export interface NormalizedTable {
   primaryLogicalTableId?: string;
 }
 
+export interface RawSheetGrid {
+  fileType: TableFileType;
+  sheetName?: string;
+  rows: string[][];
+  rowCount: number;
+  columnCount: number;
+}
+
 export type TableFileType = "csv" | "xlsx";
 
 export interface TableSession {
@@ -252,6 +286,7 @@ export interface TableSession {
   fileName: string;
   fileType: TableFileType;
   fileBase64?: string;
+  rawSheetGrid?: RawSheetGrid;
   tableData: NormalizedTable;
   analysisData: AnalysisData | null;
   messages: Array<{

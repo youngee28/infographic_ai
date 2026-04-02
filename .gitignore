@@ -1,5 +1,7 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
+/src/components/pdf/left-panel/원고 (2024물산업통계) 인포그래픽.xlsx
+
 # dependencies
 /node_modules
 /.pnp

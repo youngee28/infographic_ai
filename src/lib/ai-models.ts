@@ -22,7 +22,7 @@ export const IMAGE_MODELS = [
 export type ImageModel = (typeof IMAGE_MODELS)[number];
 
 export const DEFAULT_QNA_MODEL: QnaModel = "gemini-3-flash-preview";
-export const DEFAULT_LAYOUT_MODEL: LayoutModel = "gemini-2.5-flash";
+export const DEFAULT_LAYOUT_MODEL: LayoutModel = "gemini-3-flash-preview";
 export const DEFAULT_IMAGE_MODEL: ImageModel = "gemini-3-pro-image-preview";
 
 export const isQnaModel = (value: string): value is QnaModel =>

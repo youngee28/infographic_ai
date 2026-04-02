@@ -1,14 +1,28 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { FileSpreadsheet, Menu, Table2 } from "lucide-react";
-import type { SummaryVariant } from "@/lib/session-types";
+import type { RawSheetGrid, SummaryVariant } from "@/lib/session-types";
 import type { TableData } from "@/lib/table-utils";
+
+function columnIndexToExcelLabel(index: number): string {
+  let current = index;
+  let label = "";
+
+  while (current >= 0) {
+    label = String.fromCharCode((current % 26) + 65) + label;
+    current = Math.floor(current / 26) - 1;
+  }
+
+  return label;
+}
 
 interface TablePreviewProps {
   fileName?: string;
   rawFileName?: string;
   summaries?: SummaryVariant[] | null;
   tableData?: TableData;
+  rawSheetGrid?: RawSheetGrid | null;
   isAnalyzing?: boolean;
   isDirty?: boolean;
   isApplyTableEditsDisabled?: boolean;
@@ -23,6 +37,7 @@ export function TablePreview({
   fileName,
   rawFileName,
   tableData,
+  rawSheetGrid,
   isDirty,
   isApplyTableEditsDisabled,
   isResetTableEditsDisabled,
@@ -31,7 +46,7 @@ export function TablePreview({
   onApplyTableEdits,
   onOpenSidebar,
 }: TablePreviewProps) {
-  if (!tableData) {
+  if (!tableData && !rawSheetGrid) {
     return (
       <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex items-center justify-center p-8">
         <div className="max-w-md text-center space-y-3 text-gray-500">
@@ -50,8 +65,29 @@ export function TablePreview({
   const resolvedFileName = fileName?.trim() || "업로드된 테이블";
   const resolvedRawFileName = rawFileName?.trim() || resolvedFileName;
   const metadataFileName = resolvedRawFileName.split(/[\\/]/).pop()?.trim() || resolvedRawFileName;
-  const isEditable = Boolean(onCellChange);
-  const hasEditControls = Boolean(onResetTableEdits || onApplyTableEdits);
+  const hasRawGrid = Boolean(rawSheetGrid);
+  const hasNormalizedTable = Boolean(tableData);
+  const [viewMode, setViewMode] = useState<"raw" | "normalized">(hasRawGrid ? "raw" : "normalized");
+
+  const rawVisibleColumnIndexes = useMemo(() => {
+    if (!rawSheetGrid) return [];
+    const indexes: number[] = [];
+    for (let columnIndex = 0; columnIndex < rawSheetGrid.columnCount; columnIndex += 1) {
+      const hasValue = rawSheetGrid.rows.some((row) => String(row[columnIndex] ?? "").trim().length > 0);
+      if (hasValue) indexes.push(columnIndex);
+    }
+    return indexes;
+  }, [rawSheetGrid]);
+
+  const previewColumns = viewMode === "raw" && rawSheetGrid
+    ? rawVisibleColumnIndexes.map((index) => columnIndexToExcelLabel(index))
+    : (tableData?.columns ?? []);
+  const previewRows = viewMode === "raw" && rawSheetGrid
+    ? rawSheetGrid.rows.map((row) => rawVisibleColumnIndexes.map((index) => row[index] ?? ""))
+    : (tableData?.rows ?? []);
+  const previewColCount = previewColumns.length;
+  const isEditable = Boolean(onCellChange) && viewMode === "normalized" && hasNormalizedTable;
+  const hasEditControls = Boolean(onResetTableEdits || onApplyTableEdits) && viewMode === "normalized" && hasNormalizedTable;
 
   return (
     <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex flex-col relative z-10">
@@ -72,19 +108,42 @@ export function TablePreview({
             <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-600">
               <FileSpreadsheet className="w-3.5 h-3.5" /> Table Preview
             </div>
-            <h2 className="text-sm font-semibold text-gray-800 truncate mt-1">{resolvedFileName}</h2>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {isEditable && <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-500">보이는 셀만 편집 가능</span>}
-              {isDirty && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700">미적용 변경</span>}
-            </div>
-          </div>
+             <h2 className="text-sm font-semibold text-gray-800 truncate mt-1">{resolvedFileName}</h2>
+             <div className="mt-2 flex flex-wrap items-center gap-2">
+               {hasRawGrid && viewMode === "raw" && <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700">원본 시트 보기</span>}
+               {isEditable && <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-500">보이는 셀만 편집 가능</span>}
+               {isDirty && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700">미적용 변경</span>}
+             </div>
+             {(hasRawGrid || hasNormalizedTable) && (
+               <div className="mt-3 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+                 {hasRawGrid && (
+                   <button
+                     type="button"
+                     onClick={() => setViewMode("raw")}
+                     className={`rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors ${viewMode === "raw" ? "bg-white text-blue-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+                   >
+                     시트 원본
+                   </button>
+                 )}
+                 {hasNormalizedTable && (
+                   <button
+                     type="button"
+                     onClick={() => setViewMode("normalized")}
+                     className={`rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors ${viewMode === "normalized" ? "bg-white text-blue-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+                   >
+                     편집용 표
+                   </button>
+                 )}
+               </div>
+             )}
+           </div>
 
           <div className="min-w-0 max-w-[45%] flex-1">
             <div className="flex flex-col items-end gap-3 text-right">
               <div className="text-[11px] leading-4 text-gray-400 break-all" title={metadataFileName}>
                 {metadataFileName}
               </div>
-              {hasEditControls && (
+                {hasEditControls && (
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   {onResetTableEdits && (
                     <button
@@ -118,9 +177,12 @@ export function TablePreview({
           <table className="min-w-full border-separate border-spacing-0 overflow-hidden rounded-xl border border-gray-200/70 bg-white shadow-sm">
             <thead className="sticky top-0 z-10 bg-gray-50/95 backdrop-blur-sm">
               <tr>
-                {tableData.columns.map((header) => (
+                <th className="border-b border-r border-gray-200/70 px-3 py-2.5 text-center text-[11px] font-semibold text-gray-400 whitespace-nowrap bg-gray-100/90 min-w-[56px]">
+                  {viewMode === "raw" ? "#" : ""}
+                </th>
+                {previewColumns.map((header, index) => (
                   <th
-                    key={header}
+                    key={`${header}-${index}`}
                     className="border-b border-r last:border-r-0 border-gray-200/70 px-3 py-2.5 text-left text-[12px] font-semibold text-gray-700 whitespace-nowrap"
                   >
                     {header}
@@ -129,16 +191,22 @@ export function TablePreview({
               </tr>
             </thead>
             <tbody>
-              {tableData.rows.length === 0 ? (
+              {previewRows.length === 0 ? (
                 <tr>
-                  <td colSpan={tableData.columnCount} className="px-4 py-8 text-center text-sm text-gray-500">
+                  <td className="border-b border-r border-gray-200/60 px-3 py-2.5 text-center text-[11px] font-semibold text-gray-400 bg-gray-50 min-w-[56px]">
+                    1
+                  </td>
+                  <td colSpan={previewColCount} className="px-4 py-8 text-center text-sm text-gray-500">
                     헤더 아래에 표시할 데이터 행이 없습니다.
                   </td>
                 </tr>
               ) : (
-                tableData.rows.slice(0, 40).map((row, rowIndex) => (
+                previewRows.slice(0, 80).map((row, rowIndex) => (
                   <tr key={`preview-row-${rowIndex}`} className="odd:bg-white even:bg-gray-50/40">
-                    {tableData.columns.map((header, cellIndex) => {
+                    <td className="border-b border-r border-gray-200/60 px-3 py-2.5 text-center text-[11px] font-semibold text-gray-400 bg-gray-50/80 min-w-[56px] sticky left-0">
+                      {rowIndex + 1}
+                    </td>
+                    {previewColumns.map((header, cellIndex) => {
                       const cell = row[cellIndex] ?? "";
 
                       return (

@@ -1,12 +1,4 @@
-import type { NormalizedTable, TableFileType } from "@/lib/session-types";
-
-export interface RawSheetGrid {
-  fileType: TableFileType;
-  sheetName?: string;
-  rows: string[][];
-  rowCount: number;
-  columnCount: number;
-}
+import type { NormalizedTable, RawSheetGrid, TableFileType } from "@/lib/session-types";
 
 interface SheetJsLike {
   read(data: ArrayBuffer, options: { type: "array" }): { SheetNames: string[]; Sheets: Record<string, unknown> };
@@ -142,9 +134,7 @@ const parseCsv = (content: string): unknown[][] => {
     rows.push(currentRow);
   }
 
-  return rows
-    .filter((row) => row.length > 0)
-    .map((row) => parseCsvLine(row));
+  return rows.map((row) => parseCsvLine(row));
 };
 
 const loadSheetJs = async (): Promise<SheetJsLike> => {
@@ -244,11 +234,11 @@ export const parseRawGridBase64 = async (base64: string, fileName: string): Prom
 };
 
 export const serializeRawGridForGemini = (grid: RawSheetGrid, options?: { maxRows?: number; maxCols?: number }): string => {
-  const maxRows = options?.maxRows ?? 120;
-  const maxCols = options?.maxCols ?? 20;
+  const maxRows = options?.maxRows ?? 200;
+  const maxCols = options?.maxCols ?? 40;
   const visibleRows = grid.rows.slice(0, maxRows).map((row, rowIndex) => {
     const cells = Array.from({ length: Math.min(grid.columnCount, maxCols) }, (_, columnIndex) => {
-      const value = String(row[columnIndex] ?? "").trim();
+      const value = String(row[columnIndex] ?? "").replace(/\s+/g, " ").trim();
       return `C${columnIndex + 1}=${value || "∅"}`;
     });
     return `R${rowIndex + 1}: ${cells.join(" | ")}`;
@@ -260,6 +250,8 @@ export const serializeRawGridForGemini = (grid: RawSheetGrid, options?: { maxRow
     grid.sheetName ? `- sheetName: ${grid.sheetName}` : "",
     `- rowCount: ${grid.rowCount}`,
     `- columnCount: ${grid.columnCount}`,
+    visibleRows.length < grid.rowCount ? `- truncatedRows: first ${visibleRows.length} of ${grid.rowCount}` : "",
+    grid.columnCount > maxCols ? `- truncatedCols: first ${maxCols} of ${grid.columnCount}` : "",
     "",
     `[GRID_ROWS]`,
     ...visibleRows,

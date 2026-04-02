@@ -74,10 +74,11 @@ function narrativeToLines(items?: NarrativeItem[]): ReferenceLine[] {
 
 function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
   if (analysisData?.sheetStructure?.tables?.length) {
+    const primaryTableId = analysisData?.visualizationBrief?.primaryTableId ?? analysisData.sheetStructure.tables[0]?.id;
     return analysisData.sheetStructure.tables.map((table, index) => ({
       id: table.id,
       name: table.title,
-      role: index === 0 ? "primary" : table.structure === "column-major" ? "reference" : "supporting",
+      role: table.id === primaryTableId ? "primary" : table.structure === "column-major" ? "reference" : "supporting",
       purpose:
         table.structure === "mixed"
           ? "행과 열 헤더가 혼합된 표 구조 파악"
@@ -90,7 +91,7 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
       dimensions: table.dimensions,
       metrics: table.metrics,
       grain: table.structure,
-      keyTakeaway: index === 0 ? analysisData?.summaries[0]?.lines?.[0]?.text : undefined,
+      keyTakeaway: table.id === primaryTableId ? analysisData?.summaries[0]?.lines?.[0]?.text : undefined,
       structure: table.structure,
       rangeLabel: `R${table.range.startRow}-R${table.range.endRow} / C${table.range.startCol}-C${table.range.endCol}`,
       headerSummary:

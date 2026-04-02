@@ -68,13 +68,29 @@ export const analysisStructuredTableSchema = z.object({
   dimensions: z.array(z.string().trim().min(1)).default([]),
   metrics: z.array(z.string().trim().min(1)).default([]),
   notes: z.array(z.string().trim().min(1)).optional(),
+  needsReview: z.boolean().optional(),
+  reviewReasons: z.array(z.string().trim().min(1)).optional(),
+  candidates: z.array(z.object({
+    range: z.object({
+      startRow: z.number().int().positive(),
+      endRow: z.number().int().positive(),
+      startCol: z.number().int().positive(),
+      endCol: z.number().int().positive(),
+    }),
+    structure: z.enum(["row-major", "column-major", "mixed", "ambiguous"]),
+    confidence: z.number(),
+    reason: z.string().trim().optional(),
+  })).optional(),
 });
 
 export const analysisSheetStructureSchema = z.object({
   sheetName: z.string().trim().optional(),
   tableCount: z.number().int().nonnegative(),
+  needsReview: z.boolean().optional(),
+  reviewReason: z.string().trim().optional(),
   tables: z.array(analysisStructuredTableSchema).default([]),
 });
+
 
 export const tableRelationSchema = z.object({
   fromTableId: z.string().trim().min(1),
@@ -379,6 +395,14 @@ export const normalizedTableSchema = z.object({
   primaryLogicalTableId: z.string().trim().optional(),
 });
 
+export const rawSheetGridSchema = z.object({
+  fileType: z.enum(["csv", "xlsx"]),
+  sheetName: z.string().optional(),
+  rows: z.array(z.array(z.string())).default([]),
+  rowCount: z.number().int().nonnegative(),
+  columnCount: z.number().int().nonnegative(),
+});
+
 export const visualizationBriefSchema = z.object({
   headline: z.string().trim().min(1),
   coreMessage: z.string().trim().min(1),
@@ -428,6 +452,8 @@ export const analysisDataSchema = z.object({
   infographicPrompt: z.string().optional(),
   tableContext: z.string().optional(),
   tableData: normalizedTableSchema.optional(),
+  reviewReasons: z.array(z.string().trim().min(1)).optional(),
+  tableInterpretations: z.array(tableInterpretationResultSchema).optional(),
   status: z.enum(["pending", "complete"]).optional(),
 });
 
@@ -463,6 +489,7 @@ export const tableSessionSchema = z.object({
   fileName: z.string(),
   fileType: z.enum(["csv", "xlsx"]),
   fileBase64: z.string().optional(),
+  rawSheetGrid: rawSheetGridSchema.optional(),
   tableData: normalizedTableSchema,
   analysisData: analysisDataSchema.nullable(),
   messages: z.array(messageSchema).default([]),
@@ -519,10 +546,11 @@ function narrativeLines(items: Array<{ text: string; evidence: Array<{ pages: nu
 
 function deriveSourceInventory(data: z.infer<typeof analysisDataSchema>, title: string) {
   if (data.sheetStructure?.tables.length) {
+    const primaryStructuredTableId = data.visualizationBrief?.primaryTableId ?? data.sheetStructure.tables[0]?.id;
     const structuredTables = data.sheetStructure.tables.map((table, index) => ({
       id: table.id,
       name: table.title,
-      role: index === 0 ? "primary" as const : table.structure === "column-major" ? "reference" as const : "supporting" as const,
+      role: table.id === primaryStructuredTableId ? "primary" as const : table.structure === "column-major" ? "reference" as const : "supporting" as const,
       purpose:
         table.structure === "mixed"
           ? "행과 열 헤더가 혼합된 표 구조를 파악"
@@ -535,7 +563,7 @@ function deriveSourceInventory(data: z.infer<typeof analysisDataSchema>, title: 
       dimensions: table.dimensions,
       metrics: table.metrics,
       grain: table.structure,
-      keyTakeaway: index === 0 ? data.summaries[0]?.lines?.[0]?.text : undefined,
+      keyTakeaway: table.id === primaryStructuredTableId ? data.summaries[0]?.lines?.[0]?.text : undefined,
       structure: table.structure,
       rangeLabel: `R${table.range.startRow}-R${table.range.endRow} / C${table.range.startCol}-C${table.range.endCol}`,
       headerSummary:

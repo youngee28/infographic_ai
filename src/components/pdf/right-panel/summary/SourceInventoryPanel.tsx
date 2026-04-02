@@ -17,9 +17,10 @@ export function SourceInventoryPanel({ tables, relations }: SourceInventoryPanel
       <div className="rounded-xl border border-gray-200/70 bg-white shadow-sm overflow-hidden">
         {tables.length > 0 && (
           <div className="divide-y divide-gray-100">
-            {tables.map((table) => (
+            {tables.map((table, index) => (
               <div key={table.id} className="px-4 py-3.5">
                 <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[12px] font-bold text-indigo-700">표 {index + 1}</span>
                   <span className="text-[13px] font-semibold text-gray-800">{table.name}</span>
                   <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 border border-indigo-100">
                     {table.role}
