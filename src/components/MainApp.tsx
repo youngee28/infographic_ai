@@ -18,6 +18,7 @@ import type {
   AnalysisStructuredTable,
   LayoutAspectRatio,
   LayoutChartType,
+  LayoutGeometry,
   LayoutPlan,
   LayoutSectionType,
   RawSheetGrid,
@@ -30,7 +31,10 @@ import {
   buildTableContext,
   getDatasetTitle,
   parseTableFile,
+  syncPrimaryLogicalTableToTopLevel,
   type TableData,
+  updateLogicalTableCell,
+  updateLogicalTableHeader,
 } from "@/lib/table-utils";
 import { ApiKeyModal } from "./ApiKeyModal";
 import { Sidebar } from "./Sidebar";
@@ -122,14 +126,39 @@ function normalizeLayoutSectionType(value: unknown): LayoutSectionType | undefin
   return isLayoutSectionType(value) ? value : undefined;
 }
 
+function normalizeLayoutGeometry(value: unknown): LayoutGeometry | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as { x?: unknown; y?: unknown; width?: unknown; height?: unknown };
+  if (
+    typeof candidate.x !== "number" ||
+    typeof candidate.y !== "number" ||
+    typeof candidate.width !== "number" ||
+    typeof candidate.height !== "number"
+  ) {
+    return undefined;
+  }
+
+  const x = Math.max(0, Math.min(100, candidate.x));
+  const y = Math.max(0, Math.min(100, candidate.y));
+  const width = Math.max(1, Math.min(100 - x, candidate.width));
+  const height = Math.max(1, Math.min(100 - y, candidate.height));
+  return { x, y, width, height };
+}
+
 function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | undefined {
   if (!value || typeof value !== "object") return undefined;
 
   const candidate = value as {
+    id?: unknown;
+    name?: unknown;
+    description?: unknown;
     layoutType?: unknown;
     aspectRatio?: unknown;
+    headerTitleLayout?: unknown;
+    headerSummaryLayout?: unknown;
     sections?: unknown;
     visualPolicy?: unknown;
+    previewImageDataUrl?: unknown;
   };
 
   const layoutType = candidate.layoutType === "dashboard" ? "dashboard" : undefined;
@@ -145,9 +174,12 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
           type?: unknown;
           sourceTableIds?: unknown;
           title?: unknown;
+          layout?: unknown;
+          titleLayout?: unknown;
           charts?: unknown;
           items?: unknown;
           note?: unknown;
+          noteLayout?: unknown;
         };
 
         const type = normalizeLayoutSectionType(sectionCandidate.type);
@@ -165,6 +197,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
                 goal?: unknown;
                 dimension?: unknown;
                 metric?: unknown;
+                layout?: unknown;
               };
 
               const chartType = isLayoutChartType(chartCandidate.chartType) ? chartCandidate.chartType : undefined;
@@ -182,6 +215,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
                   goal,
                   dimension: normalizeNonEmptyString(chartCandidate.dimension),
                   metric: normalizeNonEmptyString(chartCandidate.metric),
+                  layout: normalizeLayoutGeometry(chartCandidate.layout),
                 },
               ];
             })
@@ -206,6 +240,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
                     goal,
                     dimension: normalizeNonEmptyString((sectionCandidate as { dimension?: unknown }).dimension),
                     metric: normalizeNonEmptyString((sectionCandidate as { metric?: unknown }).metric),
+                    layout: normalizeLayoutGeometry((sectionCandidate as { layout?: unknown }).layout),
                   },
                 ];
               })()
@@ -214,10 +249,18 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
         const items = Array.isArray(sectionCandidate.items)
           ? sectionCandidate.items.flatMap((item) => {
               if (!item || typeof item !== "object") return [];
-              const itemCandidate = item as { tableId?: unknown; label?: unknown; value?: unknown };
+              const itemCandidate = item as { tableId?: unknown; label?: unknown; value?: unknown; layout?: unknown };
               const label = normalizeNonEmptyString(itemCandidate.label);
               const itemValue = normalizeNonEmptyString(itemCandidate.value);
-              return label && itemValue ? [{ id: `item-${index + 1}-${label}`, tableId: normalizeNonEmptyString(itemCandidate.tableId), label, value: itemValue }] : [];
+              return label && itemValue
+                ? [{
+                    id: `item-${index + 1}-${label}`,
+                    tableId: normalizeNonEmptyString(itemCandidate.tableId),
+                    label,
+                    value: itemValue,
+                    layout: normalizeLayoutGeometry(itemCandidate.layout),
+                  }]
+                : [];
             })
           : undefined;
 
@@ -229,9 +272,12 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
               ? sectionCandidate.sourceTableIds.flatMap((tableId) => (typeof tableId === "string" && tableId.trim() ? [tableId.trim()] : []))
               : undefined,
             title: normalizeNonEmptyString(sectionCandidate.title),
+            layout: normalizeLayoutGeometry(sectionCandidate.layout),
+            titleLayout: normalizeLayoutGeometry(sectionCandidate.titleLayout),
             charts: charts && charts.length > 0 ? charts : undefined,
             items: items && items.length > 0 ? items : undefined,
             note: normalizeNonEmptyString(sectionCandidate.note),
+            noteLayout: normalizeLayoutGeometry(sectionCandidate.noteLayout),
           },
         ];
       })
@@ -268,6 +314,8 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
     name: normalizeNonEmptyString((candidate as { name?: unknown }).name),
     description: normalizeNonEmptyString((candidate as { description?: unknown }).description),
     previewImageDataUrl: normalizeNonEmptyString((candidate as { previewImageDataUrl?: unknown }).previewImageDataUrl),
+    headerTitleLayout: normalizeLayoutGeometry(candidate.headerTitleLayout),
+    headerSummaryLayout: normalizeLayoutGeometry(candidate.headerSummaryLayout),
     sections,
     visualPolicy,
   };
@@ -372,7 +420,7 @@ function buildSourceInventory(fileName: string, tableData: TableData, tableConte
   };
 }
 
-function buildInitialSheetStructure(fileName: string, tableData: TableData) {
+function buildInitialSheetStructure(fileName: string, tableData: TableData): AnalysisSheetStructure {
   if (tableData.logicalTables && tableData.logicalTables.length > 0) {
     return {
       sheetName: tableData.sheetName,
@@ -580,11 +628,15 @@ function buildComposeLayoutPrompt(params: {
 중요:
 - 선택된 여러 표를 하나의 dashboard 레이아웃으로 조합하세요.
 - 레이아웃은 반드시 1개만 제안하세요.
+- header를 제외한 본문 섹션은 3~4개 이내로 제한하고, 첫 본문 섹션은 가장 중요한 메시지를 담는 hero chart-group으로 구성하세요.
 - 각 chart는 어느 표를 쓰는지 tableId를 반드시 넣으세요.
 - 각 section은 관련 sourceTableIds를 넣으세요.
+- 시안답게 보이도록 섹션마다 역할이 분명해야 합니다. 예: hero 비교 차트 → 보조 KPI/보조 차트 → takeaway/note.
+- section.title, chart.title, plan.name, description은 데이터 의미가 드러나는 구체적인 문장으로 쓰고, "섹션 1", "차트 1", "시안 1" 같은 generic 라벨은 피하세요.
 - 상단은 표1, 중간은 표2, 하단은 표3처럼 수직 배치해도 되고, 좌우 분할도 가능합니다.
 - 여러 표가 선택되었으면 최소 2개 이상의 서로 다른 tableId를 레이아웃에 반영하세요.
 - chart/group/KPI/takeaway/note는 선택된 표들의 서사를 연결하는 방식으로 배치하세요.
+- geometry를 확신할 때만 기존 스키마의 layout 필드를 채우세요. section에는 layout/titleLayout/noteLayout, chart와 item에는 layout을 넣을 수 있습니다. 좌표는 0~100 퍼센트 기준입니다.
 
 반드시 JSON만 반환하세요.
 
@@ -831,6 +883,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
   const [currentRawSheetGrid, setCurrentRawSheetGrid] = useState<RawSheetGrid | null>(null);
   const [persistedTableData, setPersistedTableData] = useState<TableData | null>(null);
   const [draftTableData, setDraftTableData] = useState<TableData | null>(null);
+  const [selectedLogicalTableId, setSelectedLogicalTableId] = useState<string | null>(null);
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
 
   const isTableDirty =
@@ -846,6 +899,23 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
+
+  useEffect(() => {
+    if (!draftTableData) {
+      setSelectedLogicalTableId(null);
+      return;
+    }
+
+    const availableIds = draftTableData.logicalTables?.map((table) => table.id) ?? [];
+    if (availableIds.length === 0) {
+      setSelectedLogicalTableId(draftTableData.primaryLogicalTableId ?? null);
+      return;
+    }
+
+    if (!selectedLogicalTableId || !availableIds.includes(selectedLogicalTableId)) {
+      setSelectedLogicalTableId(draftTableData.primaryLogicalTableId ?? availableIds[0] ?? null);
+    }
+  }, [draftTableData, selectedLogicalTableId]);
 
   useEffect(() => {
     void loadSessions().then(() => {
@@ -976,6 +1046,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     setAnalysisData(null);
     setPersistedTableData(null);
     setDraftTableData(null);
+    setSelectedLogicalTableId(null);
     setCurrentRawSheetGrid(null);
     setCurrentSessionId(null);
     setCurrentFileName(undefined);
@@ -1009,6 +1080,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     setCurrentRawSheetGrid(rawSheetGrid);
     setPersistedTableData(analysis.tableData ? cloneTableData(analysis.tableData) : null);
     setDraftTableData(analysis.tableData ? cloneTableData(analysis.tableData) : null);
+    setSelectedLogicalTableId(analysis.tableData?.primaryLogicalTableId ?? analysis.tableData?.logicalTables?.[0]?.id ?? null);
 
     if (!skipHistory && window.location.pathname !== `/${id}`) {
       window.history.pushState(null, "", `/${id}`);
@@ -1025,6 +1097,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     session: TableSession,
     options?: {
       layoutPromptOverride?: string;
+      analysisSource?: "raw-grid" | "edited-table";
     }
   ) => {
     const targetSessionId = session.id;
@@ -1058,18 +1131,20 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
       const chartRecommendations = baseAnalysis.chartRecommendations?.length
         ? baseAnalysis.chartRecommendations.filter((item) => !item.tableId || selectedSourceTableIds.includes(item.tableId))
         : buildChartRecommendationsForLogicalTables(currentTableData, selectedSourceTableIds);
-      const rawGrid = session.rawSheetGrid ?? (
-        session.fileBase64
-          ? await parseRawGridBase64(session.fileBase64, session.fileName).catch(() => null)
-          : null
-      );
-      if (!rawGrid) {
-        throw new Error("Raw grid unavailable");
-      }
-
-      const rawGridText = serializeRawGridForGemini(rawGrid);
-      const structureResponse = await runStructureAnalysis(apiKey, selectedLayoutModel, rawGridText);
-      const structureValidation = validateSheetStructure(structureResponse, rawGrid.rows);
+      const useEditedTableSource = options?.analysisSource === "edited-table";
+      const rawGrid = useEditedTableSource
+        ? null
+        : session.rawSheetGrid ?? (
+            session.fileBase64
+              ? await parseRawGridBase64(session.fileBase64, session.fileName).catch(() => null)
+              : null
+          );
+      const structureResponse = rawGrid
+        ? await runStructureAnalysis(apiKey, selectedLayoutModel, serializeRawGridForGemini(rawGrid))
+        : { sheetStructure: buildInitialSheetStructure(session.fileName, currentTableData) };
+      const structureValidation = rawGrid
+        ? validateSheetStructure(structureResponse, rawGrid.rows)
+        : { ok: true as const };
       const sheetStructure = structureResponse.sheetStructure;
 
       if (!structureValidation.ok || !sheetStructure) {
@@ -1084,7 +1159,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
               sourceType: baseAnalysis.tableData?.sourceType,
             },
             sheetStructure: {
-              sheetName: rawGrid.sheetName,
+              sheetName: rawGrid?.sheetName ?? currentTableData.sheetName,
               tableCount: 0,
               needsReview: true,
               reviewReason: structureValidation.reason || "sheetStructure missing",
@@ -1158,8 +1233,14 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
 
       const interpretationResults = await Promise.all(
         sheetStructure.tables.map((table) => {
-          const sliced = sliceGridByRange(rawGrid.rows, table.range);
-          const slicedText = formatSlicedGrid(sliced, { originalRange: table.range });
+          const matchingLogicalTable = currentTableData.logicalTables?.find((candidate) => candidate.id === table.id);
+          const slicedText = matchingLogicalTable
+            ? formatSlicedGrid([matchingLogicalTable.columns, ...matchingLogicalTable.rows], {
+                originalRange: table.range,
+              })
+            : rawGrid
+              ? formatSlicedGrid(sliceGridByRange(rawGrid.rows, table.range), { originalRange: table.range })
+              : formatSlicedGrid([currentTableData.columns, ...currentTableData.rows], { originalRange: table.range });
           return runTableInterpretation(apiKey, selectedLayoutModel, sheetStructure, table, slicedText);
         })
       );
@@ -1276,20 +1357,23 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     setPageNumber(page);
   };
 
-  const handleTableCellChange = (rowIndex: number, cellIndex: number, value: string) => {
+  const handleLogicalTableSelection = (tableId: string) => {
+    setSelectedLogicalTableId(tableId);
+  };
+
+  const handleTableHeaderChange = (tableId: string, columnIndex: number, value: string) => {
     setDraftTableData((currentTableData) => {
       const sourceTableData = currentTableData ?? (analysisData?.tableData ? cloneTableData(analysisData.tableData) : null);
-
       if (!sourceTableData) return currentTableData;
+      return updateLogicalTableHeader(sourceTableData, tableId, columnIndex, value);
+    });
+  };
 
-      const nextTableData = cloneTableData(sourceTableData);
-      const targetRow = nextTableData.rows[rowIndex];
-      if (!targetRow || cellIndex < 0 || cellIndex >= nextTableData.columnCount) {
-        return currentTableData;
-      }
-
-      targetRow[cellIndex] = value;
-      return nextTableData;
+  const handleTableCellChange = (tableId: string, rowIndex: number, cellIndex: number, value: string) => {
+    setDraftTableData((currentTableData) => {
+      const sourceTableData = currentTableData ?? (analysisData?.tableData ? cloneTableData(analysisData.tableData) : null);
+      if (!sourceTableData) return currentTableData;
+      return updateLogicalTableCell(sourceTableData, tableId, rowIndex, cellIndex, value);
     });
   };
 
@@ -1299,7 +1383,9 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
         return currentTableData;
       }
 
-      return cloneTableData(persistedTableData);
+      const nextTableData = cloneTableData(persistedTableData);
+      setSelectedLogicalTableId(nextTableData.primaryLogicalTableId ?? nextTableData.logicalTables?.[0]?.id ?? null);
+      return nextTableData;
     });
   };
 
@@ -1311,22 +1397,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     const session = await store.getSession(currentSessionId);
     if (!session) return;
 
-    const nextTableData = cloneTableData(draftTableData);
-    const syncedLogicalTables = nextTableData.logicalTables?.map((table) =>
-      table.id === nextTableData.primaryLogicalTableId || (!nextTableData.primaryLogicalTableId && table.id === nextTableData.logicalTables?.[0]?.id)
-        ? {
-            ...table,
-            columns: [...nextTableData.columns],
-            rows: nextTableData.rows.map((row) => [...row]),
-            rowCount: nextTableData.rowCount,
-            columnCount: nextTableData.columnCount,
-            normalizationNotes: nextTableData.normalizationNotes ? [...nextTableData.normalizationNotes] : undefined,
-          }
-        : table
-    );
-    if (syncedLogicalTables) {
-      nextTableData.logicalTables = syncedLogicalTables;
-    }
+    const nextTableData = syncPrimaryLogicalTableToTopLevel(cloneTableData(draftTableData));
     const nextAnalysisData: AnalysisData = session.analysisData
       ? normalizeAnalysisData(
           {
@@ -1339,25 +1410,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
                   sourceType: nextTableData.sourceType,
                 }
               : undefined,
-            sourceInventory: session.analysisData.sourceInventory
-              ? {
-                  ...session.analysisData.sourceInventory,
-                  tables:
-                    session.analysisData.sourceInventory.tables.length > 0
-                      ? session.analysisData.sourceInventory.tables.map((table, index) =>
-                          index === 0
-                            ? {
-                                ...table,
-                                name: nextTableData.sheetName?.trim() || table.name,
-                                context: buildTableContext(nextTableData),
-                                dimensions: nextTableData.columns.slice(0, 2),
-                                metrics: nextTableData.columns.slice(2),
-                              }
-                            : table
-                        )
-                      : buildSourceInventory(session.fileName, nextTableData, buildTableContext(nextTableData)).tables,
-                }
-              : buildSourceInventory(session.fileName, nextTableData, buildTableContext(nextTableData)),
+            sourceInventory: buildSourceInventory(session.fileName, nextTableData, buildTableContext(nextTableData)),
             tableData: nextTableData,
             tableContext: buildTableContext(nextTableData),
             selectedSourceTableIds: getSelectedSourceTableIds(nextTableData, session.analysisData.selectedSourceTableIds),
@@ -1380,9 +1433,10 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     await store.saveSession(updatedSession);
     setPersistedTableData(cloneTableData(nextTableData));
     setDraftTableData(cloneTableData(nextTableData));
+    setSelectedLogicalTableId(nextTableData.primaryLogicalTableId ?? nextTableData.logicalTables?.[0]?.id ?? null);
     setAnalysisData(nextAnalysisData);
     await loadSessions();
-    await runAnalysisForSession(updatedSession);
+    await runAnalysisForSession(updatedSession, { analysisSource: "edited-table" });
   };
 
   const isSessionPage = Boolean(fileUrl && currentSessionId);
@@ -1481,11 +1535,14 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
                   analysisData={analysisData}
                   tableData={draftTableData}
                   rawSheetGrid={currentRawSheetGrid}
+                  selectedLogicalTableId={selectedLogicalTableId}
                   isTableDirty={isTableDirty}
                   isApplyTableEditsDisabled={!isTableDirty || isAnalyzing}
                   isResetTableEditsDisabled={!isTableDirty}
                   rawFileName={currentFileName}
                   onCellChange={handleTableCellChange}
+                  onHeaderChange={handleTableHeaderChange}
+                  onLogicalTableSelect={handleLogicalTableSelection}
                   onResetTableEdits={handleResetTableEdits}
                   onApplyTableEdits={handleApplyTableEdits}
                   onOpenSidebar={isSessionPage ? () => setIsSidebarOpen(true) : undefined}

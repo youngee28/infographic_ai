@@ -4,17 +4,17 @@ import {
   getFindingsSummaryVariant,
   getImplicationsSummaryVariant,
   getSourceTables,
+  getTableInsightContextCards,
   getTableContextHighlights,
   getTableRelations,
-  getVisualizationBrief,
 } from "@/lib/analysis-selectors";
 import { CheckPoints } from "./CheckPoints";
 import { DetailedSummary } from "./DetailedSummary";
 import { ReviewBanner } from "./ReviewBanner";
 import { SourceInventoryPanel } from "./SourceInventoryPanel";
 import { TableContextCaption } from "./TableContextCaption";
+import { TableInfographicFocusPanel } from "./TableInfographicFocusPanel";
 import { ThreeLineSummary } from "./ThreeLineSummary";
-import { VisualizationBriefPanel } from "./VisualizationBriefPanel";
 
 interface RightPanelAnalysisProps {
   analysisData: AnalysisData;
@@ -28,21 +28,21 @@ export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanel
   ];
   const tables = getSourceTables(analysisData);
   const relations = getTableRelations(analysisData);
+  const tableInsightContextCards = getTableInsightContextCards(analysisData);
   const tableContextHighlights = getTableContextHighlights(analysisData);
   const findingsSummary = getFindingsSummaryVariant(analysisData);
   const implicationsSummary = getImplicationsSummaryVariant(analysisData);
   const cautions = getCautionReferenceLines(analysisData);
-  const visualizationBrief = getVisualizationBrief(analysisData);
 
   return (
     <>
       <ReviewBanner reasons={reviewReasons} />
       <SourceInventoryPanel tables={tables} relations={relations} />
       <TableContextCaption lines={tableContextHighlights} />
+      <TableInfographicFocusPanel cards={tableInsightContextCards} />
       <ThreeLineSummary summary={findingsSummary} onCitationClick={onCitationClick} />
       <DetailedSummary summary={implicationsSummary} onCitationClick={onCitationClick} />
       <CheckPoints issues={cautions} onCitationClick={onCitationClick} />
-      <VisualizationBriefPanel brief={visualizationBrief} />
     </>
   );
 }

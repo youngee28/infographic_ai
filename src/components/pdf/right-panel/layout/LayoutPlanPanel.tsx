@@ -23,10 +23,26 @@ import { GripVertical, RotateCcw } from "lucide-react";
 import { useAppStore } from "@/lib/app-store";
 import { getAnalysisTitle, getCautions, getFindings, getLegacyKeywordFallback, getSourceTables, getVisualizationPrompt } from "@/lib/analysis-selectors";
 import { buildInfographicContext, extractGeneratedImageResult } from "@/lib/infographic-generation";
-import { buildLayoutTreeFromPlan } from "@/lib/layout-tree";
+import { buildFallbackSectionLayouts, buildLayoutTreeFromPlan, projectLayoutPlanFromTree, reorderLayoutTreeRoots, updateLayoutTreeBlock } from "@/lib/layout-tree";
 import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
 import { store } from "@/lib/store";
-import type { AnalysisData, LayoutBlockTree, LayoutChartSpec, LayoutChartType, LayoutGeometry, LayoutKpiItem, LayoutPlan, LayoutSection, LayoutSectionType } from "@/lib/session-types";
+import type {
+  AnalysisData,
+  LayoutBlock,
+  LayoutBlockTree,
+  LayoutChartBlock,
+  LayoutChartSpec,
+  LayoutChartType,
+  LayoutGeometry,
+  LayoutGroupBlock,
+  LayoutHeadingBlock,
+  LayoutKpiBlock,
+  LayoutKpiItem,
+  LayoutPlan,
+  LayoutSection,
+  LayoutSectionType,
+  LayoutTextBlock,
+} from "@/lib/session-types";
 
 const SECTION_TYPE_LABELS: Record<LayoutSectionType, string> = {
   header: "헤더",
@@ -106,7 +122,7 @@ interface ActiveLayoutInteraction {
   startClientY: number;
   surfaceWidth?: number;
   surfaceHeight?: number;
-  sectionId?: string;
+  groupBlockId?: string;
   resizeDirection?: ResizeHandleDirection;
   apply?: (current: LayoutPlan, nextLayout: LayoutGeometry) => LayoutPlan;
 }
@@ -131,6 +147,12 @@ const PREVIEW_ASPECT_RATIOS: Record<NonNullable<LayoutPlan["aspectRatio"]>, stri
 const PREVIEW_SERIES_COLORS = ["#2563eb", "#0ea5e9", "#f97316", "#14b8a6", "#8b5cf6", "#ef4444"];
 const MIN_LAYOUT_WIDTH = 18;
 const MIN_LAYOUT_HEIGHT = 12;
+const MIN_TITLE_BLOCK_WIDTH = 32;
+const MIN_TITLE_BLOCK_HEIGHT = 18;
+const MIN_HEADER_TITLE_WIDTH = 42;
+const MIN_HEADER_TITLE_HEIGHT = 44;
+const MIN_HEADER_SUMMARY_WIDTH = 48;
+const MIN_HEADER_SUMMARY_HEIGHT = 24;
 
 type ResizeHandleDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
@@ -295,52 +317,10 @@ function resolveInteractionSurfaceMetrics(target: EventTarget | null): { width: 
   };
 }
 
-function buildDefaultSectionLayouts(plan: LayoutPlan): Map<string, LayoutGeometry> {
-  const editableSections = plan.sections.filter((section) => section.type !== "header");
-  if (editableSections.length === 0) {
-    return new Map();
-  }
-
-  const marginX = 4;
-  const topPadding = plan.aspectRatio === "portrait" ? 4 : 3.5;
-  const bottomPadding = 4;
-  const gap = 3;
-  const totalGap = gap * Math.max(editableSections.length - 1, 0);
-  const weightedSections = editableSections.map((section) => ({
-    section,
-    weight: section.type === "chart-group" ? 1.45 : section.type === "kpi-group" ? 1.05 : 0.85,
-  }));
-  const totalWeight = weightedSections.reduce((sum, entry) => sum + entry.weight, 0);
-  const minimumHeights = weightedSections.map(({ section }) => (section.type === "chart-group" ? 18 : section.type === "kpi-group" ? 14 : 12));
-  const minimumHeightBudget = minimumHeights.reduce((sum, height) => sum + height, 0);
-  const distributableHeight = Math.max(0, 100 - topPadding - bottomPadding - totalGap - minimumHeightBudget);
-  let cursorY = topPadding;
-  const layouts = new Map<string, LayoutGeometry>();
-
-  weightedSections.forEach(({ section, weight }, index) => {
-    const remainingSections = weightedSections.length - index - 1;
-    const remainingMinimumHeight = minimumHeights.slice(index + 1).reduce((sum, height) => sum + height, 0);
-    const remainingGap = gap * remainingSections;
-    const extraHeight = distributableHeight * (weight / Math.max(totalWeight, 1));
-    const baseHeight = minimumHeights[index] ?? 12;
-    const maxHeight = 100 - bottomPadding - cursorY - remainingMinimumHeight - remainingGap;
-    const height = clampPercent(baseHeight + extraHeight, baseHeight, Math.max(baseHeight, maxHeight));
-    layouts.set(section.id, {
-      x: marginX,
-      y: cursorY,
-      width: 100 - marginX * 2,
-      height,
-    });
-    cursorY += height + gap;
-  });
-
-  return layouts;
-}
-
 function buildSectionTitleLayout(section: LayoutSection): LayoutGeometry {
   return section.type === "chart-group" || section.type === "kpi-group"
-    ? { x: 0, y: 0, width: 38, height: 14 }
-    : { x: 0, y: 0, width: 44, height: 14 };
+    ? { x: 0, y: 0, width: 38, height: 18 }
+    : { x: 0, y: 0, width: 44, height: 18 };
 }
 
 function buildCompactSectionTitleLayout(section: LayoutSection): LayoutGeometry {
@@ -353,6 +333,32 @@ function buildLegacySectionTitleLayout(section: LayoutSection): LayoutGeometry {
   return section.type === "chart-group" || section.type === "kpi-group"
     ? { x: 0, y: 0, width: 64, height: 12 }
     : { x: 0, y: 0, width: 70, height: 14 };
+}
+
+function normalizeTitleLayout(layout: LayoutGeometry | undefined, fallback: LayoutGeometry): LayoutGeometry {
+  const source = layout ?? fallback;
+  const x = clampPercent(source.x, 0, 100);
+  const y = clampPercent(source.y, 0, 100);
+  return {
+    ...source,
+    x,
+    y,
+    width: clampPercent(source.width, MIN_TITLE_BLOCK_WIDTH, Math.max(MIN_TITLE_BLOCK_WIDTH, 100 - x)),
+    height: clampPercent(source.height, MIN_TITLE_BLOCK_HEIGHT, Math.max(MIN_TITLE_BLOCK_HEIGHT, 100 - y)),
+  };
+}
+
+function normalizeHeaderLayout(layout: LayoutGeometry | undefined, fallback: LayoutGeometry, minimumWidth: number, minimumHeight: number): LayoutGeometry {
+  const source = layout ?? fallback;
+  const x = clampPercent(source.x, 0, 100);
+  const y = clampPercent(source.y, 0, 100);
+  return {
+    ...source,
+    x,
+    y,
+    width: clampPercent(source.width, minimumWidth, Math.max(minimumWidth, 100 - x)),
+    height: clampPercent(source.height, minimumHeight, Math.max(minimumHeight, 100 - y)),
+  };
 }
 
 function buildSectionNoteLayout(): LayoutGeometry {
@@ -407,9 +413,9 @@ function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | 
   if (!cloned) return null;
 
   const previewContext = buildPreviewDataRegistry(undefined);
-  const defaultLayouts = buildDefaultSectionLayouts(cloned);
-  const defaultHeaderTitleLayout = { x: 0, y: 0, width: 58, height: 34 };
-  const defaultHeaderSummaryLayout = { x: 0, y: 38, width: 64, height: 24 };
+  const defaultLayouts = buildFallbackSectionLayouts(cloned);
+  const defaultHeaderTitleLayout = { x: 0, y: 0, width: 58, height: 44 };
+  const defaultHeaderSummaryLayout = { x: 0, y: 50, width: 64, height: 24 };
   const compactHeaderTitleLayout = { x: 0, y: 0, width: 70, height: 24 };
   const compactHeaderSummaryLayout = { x: 0, y: 28, width: 78, height: 28 };
   const legacyHeaderTitleLayout = { x: 0, y: 0, width: 72, height: 34 };
@@ -420,7 +426,9 @@ function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | 
   cloned.headerSummaryLayout = !cloned.headerSummaryLayout || isSameLayout(cloned.headerSummaryLayout, legacyHeaderSummaryLayout) || isSameLayout(cloned.headerSummaryLayout, compactHeaderSummaryLayout)
     ? defaultHeaderSummaryLayout
     : cloned.headerSummaryLayout;
-  cloned.sections = cloned.sections.map((rawSection) => {
+  cloned.headerTitleLayout = normalizeHeaderLayout(cloned.headerTitleLayout, defaultHeaderTitleLayout, MIN_HEADER_TITLE_WIDTH, MIN_HEADER_TITLE_HEIGHT);
+  cloned.headerSummaryLayout = normalizeHeaderLayout(cloned.headerSummaryLayout, defaultHeaderSummaryLayout, MIN_HEADER_SUMMARY_WIDTH, MIN_HEADER_SUMMARY_HEIGHT);
+  const normalizedSections = cloned.sections.map((rawSection) => {
     const section = ensureSectionItems(rawSection, previewContext);
     const chartLayouts = section.charts ? buildDefaultChartLayouts(section.charts.length, cloned.aspectRatio) : [];
     const itemLayouts = section.items ? buildDefaultKpiLayouts(section.items.length) : [];
@@ -437,7 +445,7 @@ function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | 
           ? undefined
           : !section.titleLayout || (legacyTitleLayout && isSameLayout(section.titleLayout, legacyTitleLayout)) || (compactTitleLayout && isSameLayout(section.titleLayout, compactTitleLayout))
             ? defaultTitleLayout
-            : section.titleLayout,
+            : normalizeTitleLayout(section.titleLayout, defaultTitleLayout!),
       noteLayout: section.noteLayout ?? (section.type === "takeaway" || section.type === "note" ? buildSectionNoteLayout() : undefined),
       charts: section.charts?.map((chart, chartIndex) => ({
         ...chart,
@@ -451,8 +459,22 @@ function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | 
     };
   });
 
-  cloned.layoutTree = buildLayoutTreeFromPlan(cloned);
-  return cloned;
+  const normalizedPlan: LayoutPlan = {
+    ...cloned,
+    sections: normalizedSections,
+  };
+
+  if (normalizedPlan.layoutTree && Object.keys(normalizedPlan.layoutTree.blocks).length > 0) {
+    return projectLayoutPlanFromTree({
+      ...normalizedPlan,
+      layoutTree: buildLayoutTreeFromPlan(normalizedPlan, normalizedPlan.layoutTree),
+    });
+  }
+
+  return {
+    ...normalizedPlan,
+    layoutTree: buildLayoutTreeFromPlan(normalizedPlan, normalizedPlan.layoutTree),
+  };
 }
 
 function buildFallbackLayoutPlans(analysisData: AnalysisData | null): LayoutPlan[] {
@@ -662,10 +684,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
       if (!currentPlan) return;
 
       const updatedPlan = updater(currentPlan);
-      const nextPlan = ensureEditableLayoutPlan({
-        ...updatedPlan,
-        layoutTree: undefined,
-      });
+      const nextPlan = ensureEditableLayoutPlan(updatedPlan);
       if (!nextPlan) return;
 
       setEditablePlan(nextPlan);
@@ -1572,6 +1591,151 @@ function ensureSectionItems(section: LayoutSection, registry: PreviewDataRegistr
   };
 }
 
+function resolveLayoutTree(plan: LayoutPlan): LayoutBlockTree {
+  return plan.layoutTree ?? buildLayoutTreeFromPlan(plan);
+}
+
+function resolveGroupRoleLabel(role: LayoutGroupBlock["content"]["role"]): string {
+  return role === "generic" ? "그룹" : SECTION_TYPE_LABELS[role];
+}
+
+function resolveSectionSourceTableIds(plan: LayoutPlan, sectionId?: string): string[] | undefined {
+  if (!sectionId) return undefined;
+  return plan.sections.find((section) => section.id === sectionId)?.sourceTableIds;
+}
+
+function buildChartSpecFromBlock(block: LayoutChartBlock): LayoutChartSpec {
+  return {
+    id: block.content.chartId,
+    tableId: block.content.tableId,
+    chartType: block.content.chartType,
+    title: block.content.title,
+    goal: block.content.goal,
+    dimension: block.content.dimension,
+    metric: block.content.metric,
+    layout: block.layout,
+  };
+}
+
+function resolveKpiNoteForBlock(block: LayoutKpiBlock, plan: LayoutPlan, registry: PreviewDataRegistry): string {
+  const sourceTableIds = resolveSectionSourceTableIds(plan, block.content.sectionId);
+  const context = resolvePreviewDataContext(registry, block.content.tableId, sourceTableIds);
+  const metricIndex = resolveMetricIndex(context, undefined);
+  const dimensionIndex = resolveDimensionIndex(context, undefined, metricIndex);
+  const metricLabel = context.columns[metricIndex] ?? "핵심 지표";
+  const aggregatedItems = metricIndex >= 0 && dimensionIndex >= 0 ? aggregateByDimension(context, dimensionIndex, metricIndex) : [];
+  const sortedItems = aggregatedItems.slice().sort((left, right) => right.value - left.value || left.label.localeCompare(right.label));
+  const totalValue = aggregatedItems.reduce((sum, item) => sum + item.value, 0);
+  const averageValue = aggregatedItems.length > 0 ? totalValue / aggregatedItems.length : 0;
+  const topItem = sortedItems[0];
+  const normalizedLabel = normalizePreviewKey(block.content.label);
+
+  if (normalizedLabel.includes("행") || normalizedLabel.includes("row") || normalizedLabel.includes("건수") || normalizedLabel.includes("count")) {
+    return "원본 행 수";
+  }
+
+  if (normalizedLabel.includes("열") || normalizedLabel.includes("column")) {
+    return "열 개수";
+  }
+
+  if (normalizedLabel.includes("평균") || normalizedLabel.includes("avg") || normalizedLabel.includes("mean")) {
+    return `${metricLabel} 평균`;
+  }
+
+  if (normalizedLabel.includes("최대") || normalizedLabel.includes("max")) {
+    return `${context.columns[dimensionIndex] ?? "차원"} 최고값`;
+  }
+
+  if (normalizedLabel.includes("대표") || normalizedLabel.includes("1위") || normalizedLabel.includes("top") || normalizedLabel.includes("최고")) {
+    return topItem ? `${formatPreviewNumber(topItem.value)} 기준` : "대표 항목";
+  }
+
+  if (metricIndex >= 0) {
+    return aggregatedItems.length > 0 && averageValue >= 0 ? `${metricLabel} 합계` : `${metricLabel} 지표`;
+  }
+
+  return plan.sections.find((section) => section.id === block.content.sectionId)?.title || "핵심 수치";
+}
+
+function rebuildCanvasGroupRegionLayouts(plan: LayoutPlan): LayoutPlan {
+  const layoutTree = resolveLayoutTree(plan);
+  const canvasGroups = layoutTree.rootIds
+    .map((rootId) => layoutTree.blocks[rootId])
+    .filter((block): block is LayoutGroupBlock => Boolean(block && block.type === "group" && block.region === "canvas"));
+  if (canvasGroups.length === 0) {
+    return plan;
+  }
+
+  const marginX = 4;
+  const topPadding = plan.aspectRatio === "portrait" ? 4 : 3.5;
+  const bottomPadding = 4;
+  const gap = 3;
+  const nextLayouts = new Map<string, LayoutGeometry>();
+  let cursorY = topPadding;
+
+  canvasGroups.forEach((groupBlock, index) => {
+    const remaining = canvasGroups.length - index - 1;
+    const remainingMinimumHeight = canvasGroups.slice(index + 1).reduce((sum, block) => sum + Math.max(12, Math.min(block.layout.height, 100)), 0);
+    const remainingGap = gap * remaining;
+    const maxHeight = 100 - bottomPadding - cursorY - remainingMinimumHeight - remainingGap;
+    const nextHeight = clampPercent(groupBlock.layout.height, 12, Math.max(12, maxHeight));
+    nextLayouts.set(groupBlock.id, {
+      x: clampPercent(groupBlock.layout.x, 0, 100 - Math.min(groupBlock.layout.width, 100)),
+      y: cursorY,
+      width: clampPercent(groupBlock.layout.width, 24, 100 - marginX * 2),
+      height: nextHeight,
+    });
+    cursorY += nextHeight + gap;
+  });
+
+  const nextBlocks = { ...layoutTree.blocks };
+  let changed = false;
+
+  canvasGroups.forEach((block) => {
+    const nextLayout = nextLayouts.get(block.id);
+    if (!nextLayout || isSameLayout(block.layout, nextLayout)) {
+      return;
+    }
+
+    nextBlocks[block.id] = {
+      ...block,
+      layout: nextLayout,
+    };
+    changed = true;
+  });
+
+  if (!changed) {
+    return plan;
+  }
+
+  return projectLayoutPlanFromTree({
+    ...plan,
+    layoutTree: {
+      rootIds: [...layoutTree.rootIds],
+      blocks: nextBlocks,
+    },
+  });
+}
+
+function resolveCanvasGroupTargetIndex(plan: LayoutPlan, groupBlockId: string, clientY: number, canvasRect?: DOMRect | null): number {
+  const layoutTree = resolveLayoutTree(plan);
+  const canvasGroups = layoutTree.rootIds
+    .map((rootId) => layoutTree.blocks[rootId])
+    .filter((block): block is LayoutGroupBlock => Boolean(block && block.type === "group" && block.region === "canvas"));
+  const currentIndex = canvasGroups.findIndex((block) => block.id === groupBlockId);
+  if (currentIndex < 0 || !canvasRect || canvasRect.height <= 0) {
+    return currentIndex;
+  }
+
+  const pointerY = clampPercent(((clientY - canvasRect.top) / canvasRect.height) * 100, 0, 100);
+  const nextIndex = canvasGroups.findIndex((block) => pointerY < block.layout.y + block.layout.height / 2);
+  return nextIndex >= 0 ? nextIndex : Math.max(canvasGroups.length - 1, 0);
+}
+
+function reorderCanvasGroupIntoRegion(plan: LayoutPlan, groupBlockId: string, targetIndex: number): LayoutPlan {
+  return rebuildCanvasGroupRegionLayouts(reorderLayoutTreeRoots(plan, groupBlockId, targetIndex));
+}
+
 function ChartCanvas({ preview }: { preview: PreparedPreviewChart }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartInstanceRef = useRef<Chart<PreviewCanvasType, number[], string> | null>(null);
@@ -1707,10 +1871,6 @@ function updateChart(plan: LayoutPlan, sectionId: string, chartId: string, updat
   }));
 }
 
-function updatePlanLayoutField(plan: LayoutPlan, field: "headerTitleLayout" | "headerSummaryLayout", layout: LayoutGeometry): LayoutPlan {
-  return { ...plan, [field]: layout };
-}
-
 function updateSectionLayoutField(plan: LayoutPlan, sectionId: string, field: "layout" | "titleLayout" | "noteLayout", layout: LayoutGeometry): LayoutPlan {
   return updateSection(plan, sectionId, (section) => ({ ...section, [field]: layout }));
 }
@@ -1728,64 +1888,6 @@ function updateItemLayout(plan: LayoutPlan, sectionId: string, itemId: string, l
 
 function isSelectedLayoutElement(selectedElementId: string | null | undefined, ...ids: string[]): boolean {
   return Boolean(selectedElementId && ids.some((id) => id === selectedElementId));
-}
-
-function rebuildSectionRegionLayouts(plan: LayoutPlan): LayoutPlan {
-  const sectionLayouts = buildDefaultSectionLayouts(plan);
-  return {
-    ...plan,
-    sections: plan.sections.map((section) => (
-      section.type === "header"
-        ? section
-        : {
-            ...section,
-            layout: sectionLayouts.get(section.id) ?? section.layout,
-          }
-    )),
-  };
-}
-
-function resolveSectionTargetIndex(plan: LayoutPlan, sectionId: string, clientY: number, canvasRect?: DOMRect | null): number {
-  const sections = plan.sections.filter((section) => section.type !== "header");
-  const currentIndex = sections.findIndex((section) => section.id === sectionId);
-  if (currentIndex < 0 || !canvasRect || canvasRect.height <= 0) {
-    return currentIndex;
-  }
-
-  const pointerY = clampPercent(((clientY - canvasRect.top) / canvasRect.height) * 100, 0, 100);
-  const nextIndex = sections.findIndex((section) => {
-    const layout = section.layout;
-    if (!layout) return false;
-    return pointerY < layout.y + layout.height / 2;
-  });
-
-  return nextIndex >= 0 ? nextIndex : Math.max(sections.length - 1, 0);
-}
-
-function reorderSectionIntoRegion(plan: LayoutPlan, sectionId: string, targetIndex: number): LayoutPlan {
-  const headerSections = plan.sections.filter((section) => section.type === "header");
-  const sections = plan.sections.filter((section) => section.type !== "header");
-  const currentIndex = sections.findIndex((section) => section.id === sectionId);
-  if (currentIndex < 0) {
-    return plan;
-  }
-
-  const clampedIndex = Math.min(Math.max(targetIndex, 0), Math.max(sections.length - 1, 0));
-  if (currentIndex === clampedIndex) {
-    return rebuildSectionRegionLayouts(plan);
-  }
-
-  const reorderedSections = sections.slice();
-  const [movedSection] = reorderedSections.splice(currentIndex, 1);
-  if (!movedSection) {
-    return plan;
-  }
-
-  reorderedSections.splice(clampedIndex, 0, movedSection);
-  return rebuildSectionRegionLayouts({
-    ...plan,
-    sections: [...headerSections, ...reorderedSections],
-  });
 }
 
 function useLayoutCanvasSize(ref: React.RefObject<HTMLDivElement | null>): LayoutCanvasSize {
@@ -1947,7 +2049,7 @@ function LayoutObjectFrame({
         onSelect?.(id);
       }}
     >
-      <div className={`absolute inset-[3px] overflow-hidden rounded-[12px] ${className}`}>{children}</div>
+      <div className={`absolute inset-[2px] overflow-visible rounded-[12px] ${className}`}>{children}</div>
       {editable && (
         <>
           <div
@@ -2549,9 +2651,23 @@ function LayoutHtmlPreview({
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const canvasSize = useLayoutCanvasSize(canvasRef);
   const [activeInteraction, setActiveInteraction] = useState<ActiveLayoutInteraction | null>(null);
+  const layoutTree = useMemo(() => resolveLayoutTree(plan), [plan]);
   const headerSection = plan.sections.find((section) => section.type === "header");
-  const title = headerSection?.title || plan.name || getAnalysisTitle(analysisData, "데이터 레이아웃");
+  const editableHeaderTitleBlock = layoutTree.blocks[`${plan.id}-header-title`]?.type === "heading"
+    ? layoutTree.blocks[`${plan.id}-header-title`] as LayoutHeadingBlock
+    : null;
+  const editableHeaderSummaryBlock = layoutTree.blocks[`${plan.id}-header-summary`]?.type === "text"
+    ? layoutTree.blocks[`${plan.id}-header-summary`] as LayoutTextBlock
+    : null;
+  const canvasGroups = useMemo(
+    () => layoutTree.rootIds
+      .map((rootId) => layoutTree.blocks[rootId])
+      .filter((block): block is LayoutGroupBlock => Boolean(block && block.type === "group" && block.region === "canvas" && !block.hidden)),
+    [layoutTree]
+  );
+  const title = editableHeaderTitleBlock?.content.text || headerSection?.title || plan.name || getAnalysisTitle(analysisData, "데이터 레이아웃");
   const summaryText =
+    editableHeaderSummaryBlock?.content.text ||
     plan.description ||
     getFindings(analysisData)[0]?.text ||
     getCautions(analysisData)[0]?.text ||
@@ -2588,13 +2704,13 @@ function LayoutHtmlPreview({
 
     const finishInteraction = (event: PointerEvent) => {
       if (activeInteraction.type === "section-reorder") {
-        const sectionId = activeInteraction.sectionId;
-        if (sectionId) {
+        const groupBlockId = activeInteraction.groupBlockId;
+        if (groupBlockId) {
           onPlanChange(
-            (current) => reorderSectionIntoRegion(
+            (current) => reorderCanvasGroupIntoRegion(
               current,
-              sectionId,
-              resolveSectionTargetIndex(current, sectionId, event.clientY, canvasRef.current?.getBoundingClientRect())
+              groupBlockId,
+              resolveCanvasGroupTargetIndex(current, groupBlockId, event.clientY, canvasRef.current?.getBoundingClientRect())
             ),
             { persist: true }
           );
@@ -2650,39 +2766,340 @@ function LayoutHtmlPreview({
     };
   }, [activeInteraction, canvasSize.height, canvasSize.width, editable, onPlanChange]);
 
+  const startTreeBlockInteraction = useCallback(
+    (
+      type: "drag" | "resize",
+      event: React.PointerEvent,
+      origin: LayoutGeometry,
+      blockId: string,
+      resizeDirection?: ResizeHandleDirection,
+      surfaceMetrics?: { width: number; height: number }
+    ) => {
+      setActiveInteraction({
+        type,
+        origin,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        surfaceWidth: surfaceMetrics?.width,
+        surfaceHeight: surfaceMetrics?.height,
+        resizeDirection,
+        apply: (current: LayoutPlan, nextLayout: LayoutGeometry) =>
+          updateLayoutTreeBlock(current, blockId, (block) => ({
+            ...block,
+            layout: nextLayout,
+          })),
+      });
+    },
+    []
+  );
+
+  const renderEditableCanvasBlock = useCallback(
+    (groupBlock: LayoutGroupBlock, block: LayoutBlock) => {
+      if (block.hidden) {
+        return null;
+      }
+
+      if (block.type === "heading") {
+        const placeholder = resolveGroupRoleLabel(groupBlock.content.role);
+        return (
+          <LayoutObjectFrame
+            key={block.id}
+            id={block.id}
+            label="섹션 제목"
+            layout={block.layout}
+            editable={editable}
+            selected={isSelectedLayoutElement(selectedElementId, block.id)}
+            onSelect={onSelectElement}
+            onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) =>
+              startTreeBlockInteraction(type, event, origin, block.id, resizeDirection, surfaceMetrics)
+            }
+          >
+            <div className="h-full rounded-[14px] bg-white/90 px-0.5 py-0">
+              <EditableTextSlot
+                id={block.id}
+                value={block.content.text}
+                placeholder={placeholder}
+                editable={editable}
+                selected={selectedElementId === block.id}
+                editingField={editingField}
+                displayClassName="w-full text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 text-left"
+                inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700 outline-none ring-2 ring-blue-100"
+                onSelect={onSelectElement ?? (() => undefined)}
+                onStartEditing={onStartEditing}
+                onChange={onChangeEditingValue}
+                onCancel={onCancelEditing}
+                onCommit={(id, value) => {
+                  const trimmed = value.trim() || placeholder;
+                  onPlanChange?.(
+                    (current) => updateLayoutTreeBlock(current, block.id, (target) =>
+                      target.type === "heading"
+                        ? { ...target, content: { ...target.content, text: trimmed } }
+                        : target
+                    ),
+                    { persist: true }
+                  );
+                  onCommitEditing?.(id, value);
+                }}
+              />
+            </div>
+          </LayoutObjectFrame>
+        );
+      }
+
+      if (block.type === "text") {
+        return (
+          <LayoutObjectFrame
+            key={block.id}
+            id={block.id}
+            label="설명 블록"
+            layout={block.layout}
+            editable={editable}
+            selected={isSelectedLayoutElement(selectedElementId, block.id)}
+            onSelect={onSelectElement}
+            onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) =>
+              startTreeBlockInteraction(type, event, origin, block.id, resizeDirection, surfaceMetrics)
+            }
+          >
+            <div className="h-full rounded-[18px] border border-slate-200/80 bg-white px-3 pb-2.5 pt-2 shadow-[0_12px_24px_rgba(15,23,42,0.05)]">
+              <EditableTextSlot
+                id={block.id}
+                value={block.content.text}
+                placeholder="설명 텍스트"
+                editable={editable}
+                multiline
+                selected={selectedElementId === block.id}
+                editingField={editingField}
+                displayClassName="w-full text-[11px] leading-relaxed text-slate-600 text-left"
+                inputClassName="min-h-[88px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] leading-relaxed text-slate-600 outline-none ring-2 ring-blue-100"
+                onSelect={onSelectElement ?? (() => undefined)}
+                onStartEditing={onStartEditing}
+                onChange={onChangeEditingValue}
+                onCancel={onCancelEditing}
+                onCommit={(id, value) => {
+                  onPlanChange?.(
+                    (current) => updateLayoutTreeBlock(current, block.id, (target) =>
+                      target.type === "text"
+                        ? { ...target, content: { ...target.content, text: value.trim() } }
+                        : target
+                    ),
+                    { persist: true }
+                  );
+                  onCommitEditing?.(id, value);
+                }}
+              />
+            </div>
+          </LayoutObjectFrame>
+        );
+      }
+
+      if (block.type === "chart") {
+        const chart = buildChartSpecFromBlock(block);
+        const chartTitleId = `${block.id}-title`;
+        const chartGoalId = `${block.id}-goal`;
+        const sourceTableIds = resolveSectionSourceTableIds(plan, block.content.sectionId);
+
+        return (
+          <LayoutObjectFrame
+            key={block.id}
+            id={block.id}
+            label="차트 카드"
+            layout={block.layout}
+            editable={editable}
+            selected={isSelectedLayoutElement(selectedElementId, block.id, chartTitleId, chartGoalId)}
+            onSelect={onSelectElement}
+            onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) =>
+              startTreeBlockInteraction(type, event, origin, block.id, resizeDirection, surfaceMetrics)
+            }
+          >
+            <div className="h-full px-2 py-2">
+              <HtmlChartCard
+                chart={chart}
+                preview={buildPreparedPreviewChart(chart, previewDataContext, sourceTableIds)}
+                compact={compact}
+                titleContent={
+                  <EditableTextSlot
+                    id={chartTitleId}
+                    value={block.content.title}
+                    placeholder="차트 제목"
+                    editable={editable}
+                    selected={selectedElementId === chartTitleId}
+                    editingField={editingField}
+                    displayClassName="w-full text-left"
+                    inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[12px] font-semibold text-slate-900 outline-none ring-2 ring-blue-100"
+                    onSelect={onSelectElement ?? (() => undefined)}
+                    onStartEditing={onStartEditing}
+                    onChange={onChangeEditingValue}
+                    onCancel={onCancelEditing}
+                    onCommit={(id, value) => {
+                      const trimmed = value.trim() || block.content.title || "차트 제목";
+                      onPlanChange?.(
+                        (current) => updateLayoutTreeBlock(current, block.id, (target) =>
+                          target.type === "chart"
+                            ? { ...target, content: { ...target.content, title: trimmed } }
+                            : target
+                        ),
+                        { persist: true }
+                      );
+                      onCommitEditing?.(id, value);
+                    }}
+                  />
+                }
+                goalContent={
+                  <EditableTextSlot
+                    id={chartGoalId}
+                    value={block.content.goal}
+                    placeholder="차트 설명"
+                    editable={editable}
+                    multiline
+                    selected={selectedElementId === chartGoalId}
+                    editingField={editingField}
+                    displayClassName="w-full text-left"
+                    inputClassName="min-h-[64px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[10.5px] leading-relaxed text-slate-500 outline-none ring-2 ring-blue-100"
+                    onSelect={onSelectElement ?? (() => undefined)}
+                    onStartEditing={onStartEditing}
+                    onChange={onChangeEditingValue}
+                    onCancel={onCancelEditing}
+                    onCommit={(id, value) => {
+                      const trimmed = value.trim() || block.content.goal || "차트 설명";
+                      onPlanChange?.(
+                        (current) => updateLayoutTreeBlock(current, block.id, (target) =>
+                          target.type === "chart"
+                            ? { ...target, content: { ...target.content, goal: trimmed } }
+                            : target
+                        ),
+                        { persist: true }
+                      );
+                      onCommitEditing?.(id, value);
+                    }}
+                  />
+                }
+              />
+            </div>
+          </LayoutObjectFrame>
+        );
+      }
+
+      if (block.type === "kpi") {
+        const labelId = `${block.id}-label`;
+        const valueId = `${block.id}-value`;
+
+        return (
+          <LayoutObjectFrame
+            key={block.id}
+            id={block.id}
+            label="KPI 카드"
+            layout={block.layout}
+            editable={editable}
+            selected={isSelectedLayoutElement(selectedElementId, block.id, labelId, valueId)}
+            onSelect={onSelectElement}
+            onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) =>
+              startTreeBlockInteraction(type, event, origin, block.id, resizeDirection, surfaceMetrics)
+            }
+          >
+            <div className="h-full rounded-[16px] border border-slate-200 bg-white px-3 pb-2.5 pt-2 shadow-[0_12px_24px_rgba(15,23,42,0.05)]">
+              <EditableTextSlot
+                id={labelId}
+                value={block.content.label}
+                placeholder="지표 라벨"
+                editable={editable}
+                selected={selectedElementId === labelId}
+                editingField={editingField}
+                displayClassName="w-full text-[10px] font-medium text-slate-500 text-left"
+                inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[10px] font-medium text-slate-600 outline-none ring-2 ring-blue-100"
+                onSelect={onSelectElement ?? (() => undefined)}
+                onStartEditing={onStartEditing}
+                onChange={onChangeEditingValue}
+                onCancel={onCancelEditing}
+                onCommit={(id, value) => {
+                  const trimmed = value.trim() || block.content.label || "지표";
+                  onPlanChange?.(
+                    (current) => updateLayoutTreeBlock(current, block.id, (target) =>
+                      target.type === "kpi"
+                        ? { ...target, content: { ...target.content, label: trimmed } }
+                        : target
+                    ),
+                    { persist: true }
+                  );
+                  onCommitEditing?.(id, value);
+                }}
+              />
+              <EditableTextSlot
+                id={valueId}
+                value={block.content.value}
+                placeholder="값"
+                editable={editable}
+                selected={selectedElementId === valueId}
+                editingField={editingField}
+                displayClassName="mt-2 w-full text-[15px] font-bold tracking-[-0.03em] text-slate-900 text-left"
+                inputClassName="mt-2 w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[15px] font-bold tracking-[-0.03em] text-slate-900 outline-none ring-2 ring-blue-100"
+                onSelect={onSelectElement ?? (() => undefined)}
+                onStartEditing={onStartEditing}
+                onChange={onChangeEditingValue}
+                onCancel={onCancelEditing}
+                onCommit={(id, value) => {
+                  const trimmed = value.trim() || block.content.value.trim() || "-";
+                  onPlanChange?.(
+                    (current) => updateLayoutTreeBlock(current, block.id, (target) =>
+                      target.type === "kpi"
+                        ? { ...target, content: { ...target.content, value: trimmed } }
+                        : target
+                    ),
+                    { persist: true }
+                  );
+                  onCommitEditing?.(id, value);
+                }}
+              />
+              <p className="mt-1 text-[9.5px] leading-relaxed text-slate-400">{resolveKpiNoteForBlock(block, plan, previewDataContext)}</p>
+            </div>
+          </LayoutObjectFrame>
+        );
+      }
+
+      return null;
+    },
+    [
+      compact,
+      editable,
+      editingField,
+      onCancelEditing,
+      onChangeEditingValue,
+      onCommitEditing,
+      onPlanChange,
+      onSelectElement,
+      onStartEditing,
+      plan,
+      previewDataContext,
+      selectedElementId,
+      startTreeBlockInteraction,
+    ]
+  );
+
   return (
     <div className="overflow-hidden rounded-[20px] border border-slate-200/80 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.08)]">
       <div className="border-b border-slate-200 bg-[linear-gradient(135deg,rgba(248,250,252,0.95)_0%,rgba(255,255,255,1)_58%,rgba(241,245,249,1)_100%)] px-4 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Deterministic HTML Preview</p>
-            {editable && plan.headerTitleLayout && plan.headerSummaryLayout ? (
-              <div className="relative mt-1 h-[68px] overflow-visible">
+            {editable && editableHeaderTitleBlock && editableHeaderSummaryBlock ? (
+              <div className="relative mt-1 h-[84px] overflow-visible">
                 <LayoutObjectFrame
-                  id={`${plan.id}-header-title`}
+                  id={editableHeaderTitleBlock.id}
                   label="제목"
-                  layout={plan.headerTitleLayout}
+                  layout={editableHeaderTitleBlock.layout}
                   editable={editable}
-                  selected={isSelectedLayoutElement(selectedElementId, `${plan.id}-header-title`)}
+                  selected={isSelectedLayoutElement(selectedElementId, editableHeaderTitleBlock.id)}
                   onSelect={onSelectElement}
-                  onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => setActiveInteraction({
-                    type,
-                    origin,
-                    startClientX: event.clientX,
-                    startClientY: event.clientY,
-                    surfaceWidth: surfaceMetrics?.width,
-                    surfaceHeight: surfaceMetrics?.height,
-                    resizeDirection,
-                    apply: (current: LayoutPlan, nextLayout: LayoutGeometry) => updatePlanLayoutField(current, "headerTitleLayout", nextLayout),
-                  })}
+                  onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) =>
+                    startTreeBlockInteraction(type, event, origin, editableHeaderTitleBlock.id, resizeDirection, surfaceMetrics)
+                  }
                 >
                   <div className="h-full rounded-[14px] bg-white/80 px-0.5 py-0">
                     <EditableTextSlot
-                      id={`${plan.id}-header-title`}
+                      id={editableHeaderTitleBlock.id}
                       value={title}
                       placeholder="레이아웃 제목"
                       editable={editable}
-                      selected={selectedElementId === `${plan.id}-header-title`}
+                      selected={selectedElementId === editableHeaderTitleBlock.id}
                       editingField={editingField}
                       displayClassName="w-full text-left text-[18px] font-bold tracking-[-0.04em] text-slate-900"
                       inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[18px] font-bold tracking-[-0.04em] text-slate-900 outline-none ring-2 ring-blue-100"
@@ -2692,44 +3109,38 @@ function LayoutHtmlPreview({
                       onCancel={onCancelEditing}
                       onCommit={(id, value) => {
                         const trimmed = value.trim();
-                        onPlanChange?.((current) => {
-                          const currentHeader = current.sections.find((section) => section.type === "header");
-                          if (currentHeader) {
-                            return updateSection(current, currentHeader.id, (section) => ({ ...section, title: trimmed || undefined }));
-                          }
-                          return { ...current, name: trimmed || current.name };
-                        }, { persist: true });
+                        onPlanChange?.(
+                          (current) => updateLayoutTreeBlock(current, editableHeaderTitleBlock.id, (block) =>
+                            block.type === "heading"
+                              ? { ...block, content: { ...block.content, text: trimmed || "레이아웃 제목" } }
+                              : block
+                          ),
+                          { persist: true }
+                        );
                         onCommitEditing?.(id, value);
                       }}
                     />
                   </div>
                 </LayoutObjectFrame>
                 <LayoutObjectFrame
-                  id={`${plan.id}-header-summary`}
+                  id={editableHeaderSummaryBlock.id}
                   label="설명"
-                  layout={plan.headerSummaryLayout}
+                  layout={editableHeaderSummaryBlock.layout}
                   editable={editable}
-                  selected={isSelectedLayoutElement(selectedElementId, `${plan.id}-header-summary`)}
+                  selected={isSelectedLayoutElement(selectedElementId, editableHeaderSummaryBlock.id)}
                   onSelect={onSelectElement}
-                  onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => setActiveInteraction({
-                    type,
-                    origin,
-                    startClientX: event.clientX,
-                    startClientY: event.clientY,
-                    surfaceWidth: surfaceMetrics?.width,
-                    surfaceHeight: surfaceMetrics?.height,
-                    resizeDirection,
-                    apply: (current: LayoutPlan, nextLayout: LayoutGeometry) => updatePlanLayoutField(current, "headerSummaryLayout", nextLayout),
-                  })}
+                  onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) =>
+                    startTreeBlockInteraction(type, event, origin, editableHeaderSummaryBlock.id, resizeDirection, surfaceMetrics)
+                  }
                 >
                   <div className="h-full rounded-[14px] bg-white/70 px-0.5 py-0">
                     <EditableTextSlot
-                      id={`${plan.id}-header-summary`}
+                      id={editableHeaderSummaryBlock.id}
                       value={summaryText}
                       placeholder="레이아웃 설명"
                       editable={editable}
                       multiline
-                      selected={selectedElementId === `${plan.id}-header-summary`}
+                      selected={selectedElementId === editableHeaderSummaryBlock.id}
                       editingField={editingField}
                       displayClassName="w-full text-left text-[11px] leading-relaxed text-slate-500"
                       inputClassName="min-h-[40px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] leading-relaxed text-slate-600 outline-none ring-2 ring-blue-100"
@@ -2738,7 +3149,14 @@ function LayoutHtmlPreview({
                       onChange={onChangeEditingValue}
                       onCancel={onCancelEditing}
                       onCommit={(id, value) => {
-                        onPlanChange?.((current) => ({ ...current, description: value.trim() || undefined }), { persist: true });
+                        onPlanChange?.(
+                          (current) => updateLayoutTreeBlock(current, editableHeaderSummaryBlock.id, (block) =>
+                            block.type === "text"
+                              ? { ...block, content: { ...block.content, text: value.trim() } }
+                              : block
+                          ),
+                          { persist: true }
+                        );
                         onCommitEditing?.(id, value);
                       }}
                     />
@@ -2803,68 +3221,42 @@ function LayoutHtmlPreview({
       <div className={`bg-[radial-gradient(circle_at_top_left,rgba(226,232,240,0.7),transparent_32%),linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] ${compact ? "p-3" : "p-4"}`} style={{ aspectRatio: PREVIEW_ASPECT_RATIOS[plan.aspectRatio] }}>
         <div ref={canvasRef} className={`relative h-full rounded-[18px] ${editable ? "overflow-visible border border-dashed border-slate-200/80 bg-white/45" : "overflow-hidden"}`}>
           {editable ? (
-            plan.sections.filter((section) => section.type !== "header").map((section) => {
-              const layout = section.layout;
-              if (!layout) return null;
-              const sectionId = `${section.id}-frame`;
-              const isDraggingSection = activeInteraction?.type === "section-reorder" && activeInteraction.sectionId === section.id;
-              const isSelectedSection = isSelectedLayoutElement(selectedElementId, sectionId);
+            canvasGroups.map((groupBlock) => {
+              const isDraggingSection = activeInteraction?.type === "section-reorder" && activeInteraction.groupBlockId === groupBlock.id;
+              const isSelectedSection = isSelectedLayoutElement(selectedElementId, groupBlock.id);
+              const sectionTitle = plan.sections.find((section) => section.id === groupBlock.content.sectionId)?.title || resolveGroupRoleLabel(groupBlock.content.role);
               return (
                 <div
-                  key={section.id}
-                  style={{ left: `${layout.x}%`, top: `${layout.y}%`, width: `${layout.width}%`, height: `${layout.height}%` }}
+                  key={groupBlock.id}
+                  style={{ left: `${groupBlock.layout.x}%`, top: `${groupBlock.layout.y}%`, width: `${groupBlock.layout.width}%`, height: `${groupBlock.layout.height}%` }}
                   className={`group absolute overflow-visible rounded-[20px] p-1.5 transition-shadow ${isDraggingSection || isSelectedSection ? "z-20" : "hover:z-10"} ${isDraggingSection ? "shadow-[0_18px_36px_rgba(15,23,42,0.12)]" : "shadow-[0_12px_28px_rgba(15,23,42,0.08)]"}`}
                   onClick={(event) => {
                     event.stopPropagation();
-                    onSelectElement?.(sectionId);
+                    onSelectElement?.(groupBlock.id);
                   }}
                 >
                   <div
                     className={`pointer-events-none absolute inset-0 rounded-[20px] border transition-[border-color,box-shadow] ${isSelectedSection ? "border-transparent shadow-[inset_0_0_0_2px_rgba(59,130,246,0.9),0_0_0_5px_rgba(59,130,246,0.14)]" : "border-transparent group-hover:border-blue-200/80"}`}
                   />
                   <LayoutMoveToolbar
-                    ariaLabel={`${section.title || SECTION_TYPE_LABELS[section.type]} 영역 이동`}
+                    ariaLabel={`${sectionTitle} 영역 이동`}
                     selected={isSelectedSection}
                     onPointerDown={(event) => {
                       event.stopPropagation();
-                      onSelectElement?.(sectionId);
+                      onSelectElement?.(groupBlock.id);
                       setActiveInteraction({
                         type: "section-reorder",
                         startClientX: event.clientX,
                         startClientY: event.clientY,
-                        sectionId: section.id,
+                        groupBlockId: groupBlock.id,
                       });
                     }}
                   />
-                  <div className="h-full overflow-auto rounded-[18px] bg-white/88 p-3 custom-scrollbar">
-                    <HtmlSectionPreview
-                      plan={plan}
-                      section={section}
-                      analysisData={analysisData}
-                      previewDataContext={previewDataContext}
-                      compact={compact}
-                      editable={editable}
-                      selectedElementId={selectedElementId}
-                      editingField={editingField}
-                      onSelectElement={onSelectElement}
-                      onStartEditing={onStartEditing}
-                      onChangeEditingValue={onChangeEditingValue}
-                      onCancelEditing={onCancelEditing}
-                      onCommitEditing={onCommitEditing}
-                      onPlanChange={onPlanChange}
-                      onStartLayoutInteraction={(type, event, origin, apply, resizeDirection, surfaceMetrics) => {
-                        setActiveInteraction({
-                          type,
-                          origin,
-                          startClientX: event.clientX,
-                          startClientY: event.clientY,
-                          surfaceWidth: surfaceMetrics?.width,
-                          surfaceHeight: surfaceMetrics?.height,
-                          resizeDirection,
-                          apply,
-                        });
-                      }}
-                    />
+                  <div className="relative h-full overflow-auto rounded-[18px] bg-white/88 p-3 custom-scrollbar">
+                    {groupBlock.childIds.map((childId) => {
+                      const childBlock = layoutTree.blocks[childId];
+                      return childBlock ? renderEditableCanvasBlock(groupBlock, childBlock) : null;
+                    })}
                   </div>
                 </div>
               );

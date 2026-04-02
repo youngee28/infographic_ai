@@ -14,6 +14,15 @@ export interface TableData {
   primaryLogicalTableId?: string;
 }
 
+export interface EditableLogicalTableView {
+  tableId: string | null;
+  tableName: string;
+  columns: string[];
+  rows: string[][];
+  rowCount: number;
+  columnCount: number;
+}
+
 interface ParseTableOptions {
   apiKey?: string;
 }
@@ -63,6 +72,163 @@ function bytesToUtf8(bytes: Uint8Array): string {
 
 function getDefaultHeader(index: number): string {
   return `Column ${index + 1}`;
+}
+
+function cloneLogicalTable(table: LogicalTable): LogicalTable {
+  return {
+    ...table,
+    columns: [...table.columns],
+    rows: table.rows.map((row) => [...row]),
+    normalizationNotes: table.normalizationNotes ? [...table.normalizationNotes] : undefined,
+  };
+}
+
+function getPrimaryLogicalTable(tableData: TableData): LogicalTable | undefined {
+  const logicalTables = tableData.logicalTables ?? [];
+  return logicalTables.find((table) => table.id === tableData.primaryLogicalTableId) ?? logicalTables[0];
+}
+
+export function syncPrimaryLogicalTableToTopLevel(tableData: TableData): TableData {
+  const primaryTable = getPrimaryLogicalTable(tableData);
+  if (!primaryTable) {
+    return {
+      ...tableData,
+      columns: [...tableData.columns],
+      rows: tableData.rows.map((row) => [...row]),
+      logicalTables: tableData.logicalTables?.map(cloneLogicalTable),
+      normalizationNotes: tableData.normalizationNotes ? [...tableData.normalizationNotes] : undefined,
+    };
+  }
+
+  return {
+    ...tableData,
+    columns: [...primaryTable.columns],
+    rows: primaryTable.rows.map((row) => [...row]),
+    rowCount: primaryTable.rowCount,
+    columnCount: primaryTable.columnCount,
+    normalizationNotes: primaryTable.normalizationNotes ? [...primaryTable.normalizationNotes] : undefined,
+    primaryLogicalTableId: tableData.primaryLogicalTableId ?? primaryTable.id,
+    logicalTables: tableData.logicalTables?.map(cloneLogicalTable),
+  };
+}
+
+export function updateLogicalTableHeader(tableData: TableData, tableId: string, columnIndex: number, value: string): TableData {
+  const logicalTables = tableData.logicalTables ?? [];
+  if (logicalTables.length === 0) {
+    if (columnIndex < 0 || columnIndex >= tableData.columnCount) {
+      return {
+        ...tableData,
+        columns: [...tableData.columns],
+        rows: tableData.rows.map((row) => [...row]),
+      };
+    }
+
+    const nextColumns = [...tableData.columns];
+    nextColumns[columnIndex] = value;
+    return {
+      ...tableData,
+      columns: nextColumns,
+      rows: tableData.rows.map((row) => [...row]),
+      normalizationNotes: tableData.normalizationNotes ? [...tableData.normalizationNotes] : undefined,
+    };
+  }
+
+  const nextLogicalTables = logicalTables.map((table) => {
+    if (table.id !== tableId || columnIndex < 0 || columnIndex >= table.columnCount) {
+      return cloneLogicalTable(table);
+    }
+
+    const nextColumns = [...table.columns];
+    nextColumns[columnIndex] = value;
+    return {
+      ...cloneLogicalTable(table),
+      columns: nextColumns,
+    };
+  });
+
+  return syncPrimaryLogicalTableToTopLevel({
+    ...tableData,
+    logicalTables: nextLogicalTables,
+  });
+}
+
+export function updateLogicalTableCell(tableData: TableData, tableId: string, rowIndex: number, cellIndex: number, value: string): TableData {
+  const logicalTables = tableData.logicalTables ?? [];
+  if (logicalTables.length === 0) {
+    if (rowIndex < 0 || rowIndex >= tableData.rowCount || cellIndex < 0 || cellIndex >= tableData.columnCount) {
+      return {
+        ...tableData,
+        columns: [...tableData.columns],
+        rows: tableData.rows.map((row) => [...row]),
+      };
+    }
+
+    const nextRows = tableData.rows.map((row) => [...row]);
+    const targetRow = nextRows[rowIndex];
+    if (!targetRow) {
+      return {
+        ...tableData,
+        columns: [...tableData.columns],
+        rows: tableData.rows.map((row) => [...row]),
+      };
+    }
+    targetRow[cellIndex] = value;
+    return {
+      ...tableData,
+      columns: [...tableData.columns],
+      rows: nextRows,
+      normalizationNotes: tableData.normalizationNotes ? [...tableData.normalizationNotes] : undefined,
+    };
+  }
+
+  const nextLogicalTables = logicalTables.map((table) => {
+    if (table.id !== tableId || rowIndex < 0 || rowIndex >= table.rowCount || cellIndex < 0 || cellIndex >= table.columnCount) {
+      return cloneLogicalTable(table);
+    }
+
+    const nextRows = table.rows.map((row) => [...row]);
+    const targetRow = nextRows[rowIndex];
+    if (!targetRow) {
+      return cloneLogicalTable(table);
+    }
+    targetRow[cellIndex] = value;
+    return {
+      ...cloneLogicalTable(table),
+      rows: nextRows,
+    };
+  });
+
+  return syncPrimaryLogicalTableToTopLevel({
+    ...tableData,
+    logicalTables: nextLogicalTables,
+  });
+}
+
+export function getEditableLogicalTable(tableData: TableData, tableId?: string | null): EditableLogicalTableView | null {
+  const logicalTables = tableData.logicalTables ?? [];
+  const selectedTable = logicalTables.find((table) => table.id === tableId)
+    ?? logicalTables.find((table) => table.id === tableData.primaryLogicalTableId)
+    ?? logicalTables[0];
+
+  if (selectedTable) {
+    return {
+      tableId: selectedTable.id,
+      tableName: selectedTable.name,
+      columns: [...selectedTable.columns],
+      rows: selectedTable.rows.map((row) => [...row]),
+      rowCount: selectedTable.rowCount,
+      columnCount: selectedTable.columnCount,
+    };
+  }
+
+  return {
+    tableId: tableData.primaryLogicalTableId ?? null,
+    tableName: tableData.sheetName?.trim() || "편집용 표",
+    columns: [...tableData.columns],
+    rows: tableData.rows.map((row) => [...row]),
+    rowCount: tableData.rowCount,
+    columnCount: tableData.columnCount,
+  };
 }
 
 function normalizeHeader(header: string, index: number, seen: Map<string, number>): string {

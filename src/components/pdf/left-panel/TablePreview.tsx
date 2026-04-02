@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { FileSpreadsheet, Menu, Table2 } from "lucide-react";
 import type { RawSheetGrid, SummaryVariant } from "@/lib/session-types";
-import type { TableData } from "@/lib/table-utils";
+import { getEditableLogicalTable, type TableData } from "@/lib/table-utils";
 
 function columnIndexToExcelLabel(index: number): string {
   let current = index;
@@ -27,7 +27,10 @@ interface TablePreviewProps {
   isDirty?: boolean;
   isApplyTableEditsDisabled?: boolean;
   isResetTableEditsDisabled?: boolean;
-  onCellChange?: (rowIndex: number, cellIndex: number, value: string) => void;
+  selectedLogicalTableId?: string | null;
+  onCellChange?: (tableId: string, rowIndex: number, cellIndex: number, value: string) => void;
+  onHeaderChange?: (tableId: string, columnIndex: number, value: string) => void;
+  onLogicalTableSelect?: (tableId: string) => void;
   onResetTableEdits?: () => void;
   onApplyTableEdits?: () => void;
   onOpenSidebar?: () => void;
@@ -41,27 +44,14 @@ export function TablePreview({
   isDirty,
   isApplyTableEditsDisabled,
   isResetTableEditsDisabled,
+  selectedLogicalTableId,
   onCellChange,
+  onHeaderChange,
+  onLogicalTableSelect,
   onResetTableEdits,
   onApplyTableEdits,
   onOpenSidebar,
 }: TablePreviewProps) {
-  if (!tableData && !rawSheetGrid) {
-    return (
-      <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex items-center justify-center p-8">
-        <div className="max-w-md text-center space-y-3 text-gray-500">
-          <div className="mx-auto w-14 h-14 rounded-2xl bg-gray-50 border border-gray-200 flex items-center justify-center">
-            <Table2 className="w-6 h-6 text-gray-400" />
-          </div>
-          <h2 className="text-lg font-semibold text-gray-800">표 미리보기를 준비할 수 없습니다.</h2>
-          <p className="text-sm leading-relaxed">
-            이 세션에는 정규화된 표 데이터가 없습니다. CSV 또는 XLSX 파일로 새 세션을 시작하면 왼쪽 패널에서 미리보기를 확인할 수 있습니다.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   const resolvedFileName = fileName?.trim() || "업로드된 테이블";
   const resolvedRawFileName = rawFileName?.trim() || resolvedFileName;
   const metadataFileName = resolvedRawFileName.split(/[\\/]/).pop()?.trim() || resolvedRawFileName;
@@ -79,15 +69,37 @@ export function TablePreview({
     return indexes;
   }, [rawSheetGrid]);
 
+  const editableLogicalTable = useMemo(() => {
+    if (!tableData) return null;
+    return getEditableLogicalTable(tableData, selectedLogicalTableId);
+  }, [selectedLogicalTableId, tableData]);
+
+  if (!tableData && !rawSheetGrid) {
+    return (
+      <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex items-center justify-center p-8">
+        <div className="max-w-md text-center space-y-3 text-gray-500">
+          <div className="mx-auto w-14 h-14 rounded-2xl bg-gray-50 border border-gray-200 flex items-center justify-center">
+            <Table2 className="w-6 h-6 text-gray-400" />
+          </div>
+          <h2 className="text-lg font-semibold text-gray-800">표 미리보기를 준비할 수 없습니다.</h2>
+          <p className="text-sm leading-relaxed">
+            이 세션에는 정규화된 표 데이터가 없습니다. CSV 또는 XLSX 파일로 새 세션을 시작하면 왼쪽 패널에서 미리보기를 확인할 수 있습니다.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const previewColumns = viewMode === "raw" && rawSheetGrid
     ? rawVisibleColumnIndexes.map((index) => columnIndexToExcelLabel(index))
-    : (tableData?.columns ?? []);
+    : (editableLogicalTable?.columns ?? tableData?.columns ?? []);
   const previewRows = viewMode === "raw" && rawSheetGrid
     ? rawSheetGrid.rows.map((row) => rawVisibleColumnIndexes.map((index) => row[index] ?? ""))
-    : (tableData?.rows ?? []);
+    : (editableLogicalTable?.rows ?? tableData?.rows ?? []);
   const previewColCount = previewColumns.length;
   const isEditable = Boolean(onCellChange) && viewMode === "normalized" && hasNormalizedTable;
   const hasEditControls = Boolean(onResetTableEdits || onApplyTableEdits) && viewMode === "normalized" && hasNormalizedTable;
+  const activeLogicalTableId = editableLogicalTable?.tableId;
 
   return (
     <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex flex-col relative z-10">
@@ -110,10 +122,10 @@ export function TablePreview({
             </div>
              <h2 className="text-sm font-semibold text-gray-800 truncate mt-1">{resolvedFileName}</h2>
              <div className="mt-2 flex flex-wrap items-center gap-2">
-               {hasRawGrid && viewMode === "raw" && <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700">원본 시트 보기</span>}
-               {isEditable && <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-500">보이는 셀만 편집 가능</span>}
-               {isDirty && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700">미적용 변경</span>}
-             </div>
+                {hasRawGrid && viewMode === "raw" && <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700">원본 시트 보기</span>}
+                 {isEditable && <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-medium text-gray-500">헤더와 셀 값을 수정하면 적용 후 분석/레이아웃에 반영됩니다</span>}
+                {isDirty && <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700">미적용 변경</span>}
+              </div>
              {(hasRawGrid || hasNormalizedTable) && (
                <div className="mt-3 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
                  {hasRawGrid && (
@@ -131,7 +143,7 @@ export function TablePreview({
                      onClick={() => setViewMode("normalized")}
                      className={`rounded-md px-3 py-1.5 text-[11px] font-medium transition-colors ${viewMode === "normalized" ? "bg-white text-blue-700 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
                    >
-                     편집용 표
+                      시트 편집
                    </button>
                  )}
                </div>
@@ -167,6 +179,23 @@ export function TablePreview({
                   )}
                 </div>
               )}
+              {viewMode === "normalized" && tableData?.logicalTables && tableData.logicalTables.length > 1 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {tableData.logicalTables.map((table) => {
+                    const selected = table.id === activeLogicalTableId;
+                    return (
+                      <button
+                        key={table.id}
+                        type="button"
+                        onClick={() => onLogicalTableSelect?.(table.id)}
+                        className={`rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors ${selected ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-gray-800"}`}
+                      >
+                        {table.name || table.id}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -180,14 +209,24 @@ export function TablePreview({
                 <th className="border-b border-r border-gray-200/70 px-3 py-2.5 text-center text-[11px] font-semibold text-gray-400 whitespace-nowrap bg-gray-100/90 min-w-[56px]">
                   {viewMode === "raw" ? "#" : ""}
                 </th>
-                {previewColumns.map((header, index) => (
-                  <th
-                    key={`${header}-${index}`}
-                    className="border-b border-r last:border-r-0 border-gray-200/70 px-3 py-2.5 text-left text-[12px] font-semibold text-gray-700 whitespace-nowrap"
-                  >
-                    {header}
-                  </th>
-                ))}
+                 {previewColumns.map((header, index) => (
+                   <th
+                     key={`${header}-${index}`}
+                     className="border-b border-r last:border-r-0 border-gray-200/70 px-3 py-2.5 text-left text-[12px] font-semibold text-gray-700 whitespace-nowrap"
+                   >
+                     {isEditable && activeLogicalTableId && onHeaderChange ? (
+                       <input
+                         type="text"
+                         value={header}
+                         onChange={(event) => onHeaderChange(activeLogicalTableId, index, event.target.value)}
+                         aria-label={`헤더 ${index + 1} 편집`}
+                         className="w-full min-w-[120px] rounded-md border border-transparent bg-transparent px-2 py-1 text-[12px] font-semibold text-gray-700 outline-none transition focus:border-blue-200 focus:bg-white focus:ring-2 focus:ring-blue-100"
+                       />
+                     ) : (
+                       header
+                     )}
+                   </th>
+                 ))}
               </tr>
             </thead>
             <tbody>
@@ -218,7 +257,7 @@ export function TablePreview({
                           <input
                             type="text"
                             value={cell}
-                            onChange={(event) => onCellChange?.(rowIndex, cellIndex, event.target.value)}
+                            onChange={(event) => activeLogicalTableId && onCellChange?.(activeLogicalTableId, rowIndex, cellIndex, event.target.value)}
                             placeholder="값 없음"
                             aria-label={`${rowIndex + 1}행 ${header} 편집`}
                             className="w-full min-w-[120px] rounded-md border border-transparent bg-transparent px-2 py-1.5 text-[12.5px] leading-relaxed text-gray-700 outline-none transition focus:border-blue-200 focus:bg-white focus:ring-2 focus:ring-blue-100 placeholder:text-gray-300"

@@ -27,10 +27,28 @@ const buildContextText = (analysisData: AnalysisData | null) => {
   const implicationText = getImplications(analysisData).map((item) => item.text);
   const cautionText = getCautions(analysisData).map((item) => item.text);
 
+  const formatTableRole = (role: ReturnType<typeof getSourceTables>[number]["role"]) => {
+    switch (role) {
+      case "comparison":
+        return "비교 표";
+      case "breakdown":
+        return "구성 표";
+      case "trend":
+        return "추이 표";
+      case "reference":
+        return "참고 표";
+      default:
+        return "";
+    }
+  };
+
   return [
     `데이터셋 제목: ${getAnalysisTitle(analysisData)}`,
     getDatasetSummary(analysisData) ? `요약: ${getDatasetSummary(analysisData)}` : "",
-    tables.length > 0 ? `표 구성: ${tables.map((table) => `${table.name}(${table.role})`).join(" | ")}` : "",
+    tables.length > 0 ? `표 구성: ${tables.map((table) => {
+      const roleLabel = formatTableRole(table.role);
+      return roleLabel ? `${table.name}(${roleLabel})` : table.name;
+    }).join(" | ")}` : "",
     findingText.length > 0 ? `핵심 신호: ${findingText.slice(0, 5).join(" | ")}` : "",
     implicationText.length > 0 ? `실무 시사점: ${implicationText.slice(0, 4).join(" | ")}` : "",
     cautionText.length > 0 ? `해석상 유의점: ${cautionText.slice(0, 4).join(" | ")}` : "",

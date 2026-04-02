@@ -16,6 +16,21 @@ function formatStructureLabel(structure?: string): string {
   }
 }
 
+function formatRoleLabel(role: SourceTable["role"]): string {
+  switch (role) {
+    case "comparison":
+      return "비교 표";
+    case "breakdown":
+      return "구성 표";
+    case "trend":
+      return "추이 표";
+    case "reference":
+      return "참고 표";
+    default:
+      return "";
+  }
+}
+
 interface SourceInventoryPanelProps {
   tables: SourceTable[];
   relations: TableRelation[];
@@ -34,18 +49,25 @@ export function SourceInventoryPanel({ tables, relations }: SourceInventoryPanel
           <div className="divide-y divide-gray-100">
             {tables.map((table, index) => (
               <div key={table.id} className="px-4 py-3.5">
+                {(() => {
+                  const roleLabel = formatRoleLabel(table.role);
+                  return (
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-[12px] font-bold text-indigo-700">표 {index + 1}</span>
                   <span className="text-[13px] font-semibold text-gray-800">{table.name}</span>
-                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 border border-indigo-100">
-                    {table.role}
-                  </span>
+                  {roleLabel ? (
+                    <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 border border-indigo-100">
+                      {roleLabel}
+                    </span>
+                  ) : null}
                   {table.structure && (
                     <span className="rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600 border border-slate-200">
                       {formatStructureLabel(table.structure)}
                     </span>
                   )}
                 </div>
+                  );
+                })()}
                 <p className="mt-1 text-[12.5px] text-gray-600 leading-relaxed">{table.context}</p>
                 {(table.rangeLabel || table.headerSummary) && (
                   <div className="mt-2 space-y-1">

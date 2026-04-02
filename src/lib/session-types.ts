@@ -319,6 +319,20 @@ export interface VisualizationBrief {
   prompt?: string;
 }
 
+export interface TableInsightContextCard {
+  tableId: string;
+  tableName: string;
+  role: TableRole;
+  isPrimary: boolean;
+  coreInsights: string[];
+  contexts: string[];
+  cautions: string[];
+  chartHints: Array<{
+    chartType: LayoutChartType;
+    goal: string;
+  }>;
+}
+
 export interface AnalysisData {
   schemaVersion?: "1" | "2" | "3";
   title?: string;

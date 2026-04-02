@@ -16,7 +16,10 @@ interface LeftPanelProps {
   isApplyTableEditsDisabled?: boolean;
   isResetTableEditsDisabled?: boolean;
   rawFileName?: string;
-  onCellChange?: (rowIndex: number, cellIndex: number, value: string) => void;
+  selectedLogicalTableId?: string | null;
+  onCellChange?: (tableId: string, rowIndex: number, cellIndex: number, value: string) => void;
+  onHeaderChange?: (tableId: string, columnIndex: number, value: string) => void;
+  onLogicalTableSelect?: (tableId: string) => void;
   onResetTableEdits?: () => void;
   onApplyTableEdits?: () => void;
   onOpenSidebar?: () => void;
@@ -32,7 +35,10 @@ export function LeftPanel({
   isApplyTableEditsDisabled,
   isResetTableEditsDisabled,
   rawFileName,
+  selectedLogicalTableId,
   onCellChange,
+  onHeaderChange,
+  onLogicalTableSelect,
   onResetTableEdits,
   onApplyTableEdits,
   onOpenSidebar,
@@ -50,7 +56,10 @@ export function LeftPanel({
       isDirty={isTableDirty}
       isApplyTableEditsDisabled={isApplyTableEditsDisabled}
       isResetTableEditsDisabled={isResetTableEditsDisabled}
+      selectedLogicalTableId={selectedLogicalTableId}
       onCellChange={onCellChange}
+      onHeaderChange={onHeaderChange}
+      onLogicalTableSelect={onLogicalTableSelect}
       onResetTableEdits={onResetTableEdits}
       onApplyTableEdits={onApplyTableEdits}
       onOpenSidebar={onOpenSidebar}

@@ -10,7 +10,7 @@ export function TableContextCaption({ lines }: TableContextCaptionProps) {
   return (
     <div className="mb-5 animate-in fade-in duration-500 delay-100">
       <div className="text-[12px] font-bold text-slate-700 mb-2.5 flex items-center tracking-tight">
-        <Rows3 className="w-3.5 h-3.5 mr-1.5 text-slate-500" /> 테이블 컨텍스트
+        <Rows3 className="w-3.5 h-3.5 mr-1.5 text-slate-500" /> 표 구조·메타 정보
       </div>
       <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
         <div className="space-y-2">

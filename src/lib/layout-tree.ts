@@ -21,6 +21,10 @@ const SECTION_TYPE_LABELS: Record<Exclude<LayoutSectionType, "header">, string> 
   note: "노트",
 };
 
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
 function cloneGeometry(layout?: LayoutGeometry): LayoutGeometry | undefined {
   return layout ? { ...layout } : undefined;
 }
@@ -33,9 +37,144 @@ function getSectionLabel(sectionType: LayoutSectionType): string {
   return SECTION_TYPE_LABELS[sectionType];
 }
 
-export function buildLayoutTreeFromPlan(plan: LayoutPlan): LayoutBlockTree {
+function isFooterSection(section: LayoutSection): boolean {
+  return section.type === "takeaway" || section.type === "note";
+}
+
+function getSectionFallbackWeight(section: LayoutSection, heroSectionId?: string): number {
+  if (section.id === heroSectionId && section.type === "chart-group") {
+    return 2.8;
+  }
+
+  if (section.type === "chart-group") {
+    return 1.2;
+  }
+
+  if (section.type === "kpi-group") {
+    return 0.75;
+  }
+
+  if (isFooterSection(section)) {
+    return 0.45;
+  }
+
+  return 1;
+}
+
+function getSectionMinimumHeight(section: LayoutSection, heroSectionId?: string): number {
+  if (section.id === heroSectionId && section.type === "chart-group") {
+    return 28;
+  }
+
+  if (section.type === "chart-group") {
+    return 18;
+  }
+
+  if (section.type === "kpi-group") {
+    return 13;
+  }
+
+  if (isFooterSection(section)) {
+    return 10;
+  }
+
+  return 12;
+}
+
+export function buildFallbackSectionLayouts(plan: LayoutPlan): Map<string, LayoutGeometry> {
+  const editableSections = plan.sections.filter((section) => section.type !== "header");
+  if (editableSections.length === 0) {
+    return new Map();
+  }
+
+  const heroSectionId = editableSections.find((section) => section.type === "chart-group")?.id;
+  const hasNonFooterSections = editableSections.some((section) => !isFooterSection(section));
+  const orderedSections = hasNonFooterSections
+    ? [
+        ...editableSections.filter((section) => section.id === heroSectionId),
+        ...editableSections.filter((section) => section.id !== heroSectionId && !isFooterSection(section)),
+        ...editableSections.filter((section) => isFooterSection(section)),
+      ]
+    : editableSections;
+  const marginX = 4;
+  const topPadding = plan.aspectRatio === "portrait" ? 4 : 3.5;
+  const bottomPadding = 4;
+  const gap = 3;
+  const totalGap = gap * Math.max(orderedSections.length - 1, 0);
+  const minimumHeights = orderedSections.map((section) => getSectionMinimumHeight(section, heroSectionId));
+  const minimumHeightBudget = minimumHeights.reduce((sum, height) => sum + height, 0);
+  const weightedSections = orderedSections.map((section) => ({
+    section,
+    weight: getSectionFallbackWeight(section, heroSectionId),
+  }));
+  const totalWeight = weightedSections.reduce((sum, entry) => sum + entry.weight, 0);
+  const distributableHeight = Math.max(0, 100 - topPadding - bottomPadding - totalGap - minimumHeightBudget);
+  const layouts = new Map<string, LayoutGeometry>();
+  let cursorY = topPadding;
+
+  weightedSections.forEach(({ section, weight }, index) => {
+    const remainingSections = weightedSections.length - index - 1;
+    const remainingMinimumHeight = minimumHeights.slice(index + 1).reduce((sum, height) => sum + height, 0);
+    const remainingGap = gap * remainingSections;
+    const baseHeight = minimumHeights[index] ?? 12;
+    const proposedHeight = baseHeight + distributableHeight * (weight / Math.max(totalWeight, 1));
+    const maxHeight = 100 - bottomPadding - cursorY - remainingMinimumHeight - remainingGap;
+    const height = clampNumber(proposedHeight, baseHeight, Math.max(baseHeight, maxHeight));
+
+    layouts.set(section.id, {
+      x: marginX,
+      y: cursorY,
+      width: 100 - marginX * 2,
+      height,
+    });
+    cursorY += height + gap;
+  });
+
+  return layouts;
+}
+
+function preserveBlockMetadata(nextBlock: LayoutBlock, existingBlock?: LayoutBlock): LayoutBlock {
+  if (!existingBlock || existingBlock.type !== nextBlock.type) {
+    return nextBlock;
+  }
+
+  return {
+    ...nextBlock,
+    name: existingBlock.name ?? nextBlock.name,
+    style: existingBlock.style ?? nextBlock.style,
+    locked: existingBlock.locked ?? nextBlock.locked,
+    hidden: existingBlock.hidden ?? nextBlock.hidden,
+    zIndex: existingBlock.zIndex ?? nextBlock.zIndex,
+  };
+}
+
+function findLegacyBlockForMigration(tree: LayoutBlockTree | undefined, sectionId: string, kind: "group" | "title" | "chart" | "kpi" | "note", entityId?: string): LayoutBlock | undefined {
+  if (!tree) return undefined;
+
+  const legacyId = kind === "group"
+    ? `${sectionId}-frame`
+    : kind === "title"
+      ? `${sectionId}-title`
+      : kind === "note"
+        ? `${sectionId}-note`
+        : kind === "chart"
+          ? `${entityId}-card`
+          : `${entityId}-card`;
+
+  return tree.blocks[legacyId];
+}
+
+function buildBlockId(sectionId: string, kind: "group" | "title" | "chart" | "kpi" | "note", entityId?: string): string {
+  if (kind === "group") return `${sectionId}-frame`;
+  if (kind === "title") return `${sectionId}-title`;
+  if (kind === "note") return `${sectionId}-note`;
+  return `${sectionId}-${entityId}-${kind}`;
+}
+
+export function buildLayoutTreeFromPlan(plan: LayoutPlan, existingTree?: LayoutBlockTree): LayoutBlockTree {
   const blocks: Record<string, LayoutBlock> = {};
   const rootIds: string[] = [];
+  const fallbackSectionLayouts = buildFallbackSectionLayouts(plan);
   const headerSection = plan.sections.find((section) => section.type === "header");
   const headerTitleId = `${plan.id}-header-title`;
   const headerSummaryId = `${plan.id}-header-summary`;
@@ -44,7 +183,7 @@ export function buildLayoutTreeFromPlan(plan: LayoutPlan): LayoutBlockTree {
     id: headerTitleId,
     type: "heading",
     region: "header",
-    layout: cloneGeometry(plan.headerTitleLayout) ?? { x: 0, y: 0, width: 58, height: 34 },
+    layout: cloneGeometry(plan.headerTitleLayout) ?? { x: 0, y: 0, width: 58, height: 44 },
     content: {
       text: headerSection?.title ?? plan.name ?? "데이터 레이아웃",
     },
@@ -54,26 +193,26 @@ export function buildLayoutTreeFromPlan(plan: LayoutPlan): LayoutBlockTree {
     id: headerSummaryId,
     type: "text",
     region: "header",
-    layout: cloneGeometry(plan.headerSummaryLayout) ?? { x: 0, y: 38, width: 64, height: 24 },
+    layout: cloneGeometry(plan.headerSummaryLayout) ?? { x: 0, y: 50, width: 64, height: 24 },
     content: {
       text: plan.description ?? "표 데이터를 기반으로 재구성한 레이아웃 미리보기",
     },
   };
 
-  blocks[headerTitleId] = headerTitleBlock;
-  blocks[headerSummaryId] = headerSummaryBlock;
+  blocks[headerTitleId] = preserveBlockMetadata(headerTitleBlock, existingTree?.blocks[headerTitleId]);
+  blocks[headerSummaryId] = preserveBlockMetadata(headerSummaryBlock, existingTree?.blocks[headerSummaryId]);
   rootIds.push(headerTitleId, headerSummaryId);
 
   plan.sections
     .filter((section) => section.type !== "header")
     .forEach((section) => {
-      const groupId = `${section.id}-frame`;
-      const titleId = `${section.id}-title`;
+      const groupId = buildBlockId(section.id, "group");
+      const titleId = buildBlockId(section.id, "title");
       const groupBlock: LayoutGroupBlock = {
         id: groupId,
         type: "group",
         region: "canvas",
-        layout: cloneGeometry(section.layout) ?? { x: 4, y: 4, width: 92, height: 24 },
+        layout: cloneGeometry(section.layout) ?? fallbackSectionLayouts.get(section.id) ?? { x: 4, y: 4, width: 92, height: 24 },
         content: {
           role: section.type,
           sectionId: section.id,
@@ -86,21 +225,21 @@ export function buildLayoutTreeFromPlan(plan: LayoutPlan): LayoutBlockTree {
         type: "heading",
         region: "canvas",
         parentId: groupId,
-        layout: cloneGeometry(section.titleLayout) ?? { x: 0, y: 0, width: 44, height: 14 },
+        layout: cloneGeometry(section.titleLayout) ?? { x: 0, y: 0, width: 44, height: 18 },
         content: {
           text: section.title ?? getSectionLabel(section.type),
           sectionId: section.id,
         },
       };
 
-      blocks[groupId] = groupBlock;
-      blocks[titleId] = titleBlock;
+      blocks[groupId] = preserveBlockMetadata(groupBlock, existingTree?.blocks[groupId] ?? findLegacyBlockForMigration(existingTree, section.id, "group"));
+      blocks[titleId] = preserveBlockMetadata(titleBlock, existingTree?.blocks[titleId] ?? findLegacyBlockForMigration(existingTree, section.id, "title"));
       groupBlock.childIds.push(titleId);
       rootIds.push(groupId);
 
       if (section.type === "chart-group") {
         (section.charts ?? []).forEach((chart) => {
-          const blockId = `${chart.id}-card`;
+          const blockId = buildBlockId(section.id, "chart", chart.id);
           const chartBlock: LayoutChartBlock = {
             id: blockId,
             type: "chart",
@@ -118,14 +257,14 @@ export function buildLayoutTreeFromPlan(plan: LayoutPlan): LayoutBlockTree {
               metric: chart.metric,
             },
           };
-          blocks[blockId] = chartBlock;
+          blocks[blockId] = preserveBlockMetadata(chartBlock, existingTree?.blocks[blockId] ?? findLegacyBlockForMigration(existingTree, section.id, "chart", chart.id));
           groupBlock.childIds.push(blockId);
         });
       }
 
       if (section.type === "kpi-group") {
         (section.items ?? []).forEach((item) => {
-          const blockId = `${item.id}-card`;
+          const blockId = buildBlockId(section.id, "kpi", item.id);
           const kpiBlock: LayoutKpiBlock = {
             id: blockId,
             type: "kpi",
@@ -140,13 +279,13 @@ export function buildLayoutTreeFromPlan(plan: LayoutPlan): LayoutBlockTree {
               value: item.value,
             },
           };
-          blocks[blockId] = kpiBlock;
+          blocks[blockId] = preserveBlockMetadata(kpiBlock, existingTree?.blocks[blockId] ?? findLegacyBlockForMigration(existingTree, section.id, "kpi", item.id));
           groupBlock.childIds.push(blockId);
         });
       }
 
       if (section.type === "takeaway" || section.type === "note") {
-        const noteId = `${section.id}-note`;
+        const noteId = buildBlockId(section.id, "note");
         const noteBlock: LayoutTextBlock = {
           id: noteId,
           type: "text",
@@ -158,7 +297,7 @@ export function buildLayoutTreeFromPlan(plan: LayoutPlan): LayoutBlockTree {
             sectionId: section.id,
           },
         };
-        blocks[noteId] = noteBlock;
+        blocks[noteId] = preserveBlockMetadata(noteBlock, existingTree?.blocks[noteId] ?? findLegacyBlockForMigration(existingTree, section.id, "note"));
         groupBlock.childIds.push(noteId);
       }
     });
@@ -186,7 +325,7 @@ export function projectLayoutPlanFromTree(plan: LayoutPlan): LayoutPlan {
   const headerTitleBlock = tree.blocks[`${plan.id}-header-title`];
   const headerSummaryBlock = tree.blocks[`${plan.id}-header-summary`];
   const sourceSections = new Map(plan.sections.map((section) => [section.id, cloneSectionBase(section)]));
-  const headerSection = sourceSections.get("header") ?? { id: "header", type: "header" as const };
+  const headerSection = plan.sections.find((section) => section.type === "header") ? cloneSectionBase(plan.sections.find((section) => section.type === "header")!) : { id: "header", type: "header" as const };
 
   if (headerTitleBlock?.type === "heading") {
     headerSection.title = headerTitleBlock.content.text;
