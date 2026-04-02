@@ -8,6 +8,38 @@ import type {
   VisualizationBrief,
 } from "@/lib/session-types";
 
+function columnNumberToExcelLabel(value: number): string {
+  let current = value;
+  let label = "";
+  while (current > 0) {
+    current -= 1;
+    label = String.fromCharCode(65 + (current % 26)) + label;
+    current = Math.floor(current / 26);
+  }
+  return label || "A";
+}
+
+function formatRangeLabel(startRow: number, endRow: number, startCol: number, endCol: number): string {
+  return `${startRow}~${endRow}행, ${columnNumberToExcelLabel(startCol)}~${columnNumberToExcelLabel(endCol)}열`;
+}
+
+function formatHeaderSummary(
+  axis: "row" | "column" | "mixed" | "ambiguous",
+  headerRows?: number[],
+  headerCols?: number[]
+): string {
+  switch (axis) {
+    case "mixed":
+      return `헤더: 상단 ${headerRows?.join(", ") || "-"}행 + 좌측 ${headerCols?.map(columnNumberToExcelLabel).join(", ") || "-"}열`;
+    case "row":
+      return `헤더: 상단 ${headerRows?.join(", ") || "-"}행`;
+    case "column":
+      return `헤더: 좌측 ${headerCols?.map(columnNumberToExcelLabel).join(", ") || "-"}열`;
+    default:
+      return "헤더: 구조 미확정";
+  }
+}
+
 function compactUnique(values: Array<string | undefined | null>): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -93,15 +125,8 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
       grain: table.structure,
       keyTakeaway: table.id === primaryTableId ? analysisData?.summaries[0]?.lines?.[0]?.text : undefined,
       structure: table.structure,
-      rangeLabel: `R${table.range.startRow}-R${table.range.endRow} / C${table.range.startCol}-C${table.range.endCol}`,
-      headerSummary:
-        table.header.axis === "mixed"
-          ? `행 헤더 ${table.header.headerRows?.join(", ") || "-"}, 열 헤더 ${table.header.headerCols?.join(", ") || "-"}`
-          : table.header.axis === "row"
-            ? `헤더 행 ${table.header.headerRows?.join(", ") || "-"}`
-            : table.header.axis === "column"
-              ? `헤더 열 ${table.header.headerCols?.join(", ") || "-"}`
-              : "헤더 축이 불명확함",
+      rangeLabel: formatRangeLabel(table.range.startRow, table.range.endRow, table.range.startCol, table.range.endCol),
+      headerSummary: formatHeaderSummary(table.header.axis, table.header.headerRows, table.header.headerCols),
     }));
   }
 
@@ -170,7 +195,10 @@ function deriveVisualizationBrief(analysisData?: AnalysisData | null): Visualiza
   }
 
   const tables = deriveSourceTables(analysisData);
-  const primaryTableId = tables[0]?.id ?? "table-1";
+  const selectedSourceTableIds = analysisData?.selectedSourceTableIds?.length
+    ? compactUnique(analysisData.selectedSourceTableIds)
+    : compactUnique(tables.map((table) => table.id));
+  const primaryTableId = selectedSourceTableIds[0] ?? tables[0]?.id ?? "table-1";
   const headline = analysisData?.title?.trim() || analysisData?.dataset?.title?.trim() || "데이터 인포그래픽 기획안";
   const coreMessage =
     analysisData?.summaries[0]?.lines?.[0]?.text ||
@@ -188,10 +216,10 @@ function deriveVisualizationBrief(analysisData?: AnalysisData | null): Visualiza
     headline,
     coreMessage,
     primaryTableId,
-    supportingTableIds: tables.slice(1).map((table) => table.id),
+    supportingTableIds: selectedSourceTableIds.filter((tableId) => tableId !== primaryTableId),
     storyFlow: storyFlow.length > 0 ? storyFlow : ["핵심 흐름 파악", "비교 포인트 정리", "실무 시사점 제안"],
     chartDirections: (analysisData?.chartRecommendations ?? []).slice(0, 3).map((item, index) => ({
-      tableId: primaryTableId,
+      tableId: item.tableId?.trim() || primaryTableId,
       chartType: item.chartType,
       goal: item.reason || `추천 차트 ${index + 1}`,
     })),

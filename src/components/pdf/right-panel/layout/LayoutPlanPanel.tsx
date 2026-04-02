@@ -21,11 +21,12 @@ import Image from "next/image";
 import { GoogleGenAI } from "@google/genai";
 import { GripVertical, RotateCcw } from "lucide-react";
 import { useAppStore } from "@/lib/app-store";
-import { getAnalysisTitle, getCautions, getFindings, getLegacyKeywordFallback, getVisualizationPrompt } from "@/lib/analysis-selectors";
+import { getAnalysisTitle, getCautions, getFindings, getLegacyKeywordFallback, getSourceTables, getVisualizationPrompt } from "@/lib/analysis-selectors";
 import { buildInfographicContext, extractGeneratedImageResult } from "@/lib/infographic-generation";
+import { buildLayoutTreeFromPlan } from "@/lib/layout-tree";
 import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
 import { store } from "@/lib/store";
-import type { AnalysisData, LayoutChartSpec, LayoutChartType, LayoutGeometry, LayoutKpiItem, LayoutPlan, LayoutSection, LayoutSectionType } from "@/lib/session-types";
+import type { AnalysisData, LayoutBlockTree, LayoutChartSpec, LayoutChartType, LayoutGeometry, LayoutKpiItem, LayoutPlan, LayoutSection, LayoutSectionType } from "@/lib/session-types";
 
 const SECTION_TYPE_LABELS: Record<LayoutSectionType, string> = {
   header: "헤더",
@@ -58,6 +59,11 @@ interface PreviewDataContext {
   primaryMetricIndex: number;
   primaryDimensionIndex: number;
   secondaryDimensionIndex: number;
+}
+
+interface PreviewDataRegistry {
+  defaultContext: PreviewDataContext;
+  contextsByTableId: Record<string, PreviewDataContext>;
 }
 
 interface AggregatedPreviewDatum {
@@ -212,13 +218,14 @@ interface LayoutPlanPanelProps {
   sessionId?: string | null;
   analysisData: AnalysisData | null;
   isAnalyzing?: boolean;
-  onRegenerateLayoutCandidates?: (layoutPromptOverride: string) => Promise<void>;
+  onRegenerateLayoutCandidates?: (layoutPromptOverride: string, selectedSourceTableIds?: string[]) => Promise<void>;
 }
 
 function cloneLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | null {
   return layoutPlan
       ? {
           ...layoutPlan,
+          layoutTree: layoutPlan.layoutTree ? structuredClone(layoutPlan.layoutTree) as LayoutBlockTree : undefined,
           headerTitleLayout: layoutPlan.headerTitleLayout ? { ...layoutPlan.headerTitleLayout } : undefined,
           headerSummaryLayout: layoutPlan.headerSummaryLayout ? { ...layoutPlan.headerSummaryLayout } : undefined,
           previewImageDataUrl: layoutPlan.previewImageDataUrl,
@@ -399,7 +406,7 @@ function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | 
   const cloned = cloneLayoutPlan(layoutPlan);
   if (!cloned) return null;
 
-  const previewContext = buildPreviewDataContext(undefined);
+  const previewContext = buildPreviewDataRegistry(undefined);
   const defaultLayouts = buildDefaultSectionLayouts(cloned);
   const defaultHeaderTitleLayout = { x: 0, y: 0, width: 58, height: 34 };
   const defaultHeaderSummaryLayout = { x: 0, y: 38, width: 64, height: 24 };
@@ -444,6 +451,7 @@ function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | 
     };
   });
 
+  cloned.layoutTree = buildLayoutTreeFromPlan(cloned);
   return cloned;
 }
 
@@ -539,6 +547,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
   const selectedPlan = useMemo(() => getSelectedPlan(analysisData, candidates), [analysisData, candidates]);
   const [promptDraft, setPromptDraft] = useState(layoutSystemPrompt);
   const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false);
+  const [selectedSourceTableIds, setSelectedSourceTableIds] = useState<string[]>([]);
   const [activePreviewId, setActivePreviewId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<PreviewMode>("html");
   const [previewRetryNonce, setPreviewRetryNonce] = useState(0);
@@ -546,11 +555,19 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const [editingField, setEditingField] = useState<EditableFieldState | null>(null);
   const attemptedPreviewSignaturesRef = useRef<Record<string, string>>({});
-  const previewDataContext = useMemo(() => buildPreviewDataContext(analysisData?.tableData), [analysisData?.tableData]);
+  const previewDataContext = useMemo(() => buildPreviewDataRegistry(analysisData?.tableData), [analysisData?.tableData]);
+  const sourceTables = useMemo(() => getSourceTables(analysisData), [analysisData]);
 
   useEffect(() => {
     setPromptDraft(layoutSystemPrompt);
   }, [layoutSystemPrompt]);
+
+  useEffect(() => {
+    const nextSelected = analysisData?.selectedSourceTableIds?.length
+      ? analysisData.selectedSourceTableIds
+      : sourceTables.map((table) => table.id);
+    setSelectedSourceTableIds(nextSelected);
+  }, [analysisData?.selectedSourceTableIds, sourceTables]);
 
   useEffect(() => {
     setEditablePlan(ensureEditableLayoutPlan(selectedPlan));
@@ -616,12 +633,39 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
     [analysisData, persistAnalysisData, sessionId]
   );
 
+  const toggleSourceTableSelection = useCallback(
+    async (tableId: string) => {
+      if (!analysisData) return;
+
+      const currentSelection = selectedSourceTableIds.length > 0 ? selectedSourceTableIds : sourceTables.map((table) => table.id);
+      const exists = currentSelection.includes(tableId);
+      const nextSelection = exists
+        ? currentSelection.filter((candidateId) => candidateId !== tableId)
+        : [...currentSelection, tableId];
+
+      if (nextSelection.length === 0) {
+        return;
+      }
+
+      setSelectedSourceTableIds(nextSelection);
+      await persistAnalysisData({
+        ...analysisData,
+        selectedSourceTableIds: nextSelection,
+      });
+    },
+    [analysisData, persistAnalysisData, selectedSourceTableIds, sourceTables]
+  );
+
   const updateEditablePlan = useCallback(
     (updater: (current: LayoutPlan) => LayoutPlan, options?: { persist?: boolean }) => {
       const currentPlan = ensureEditableLayoutPlan(editablePlan ?? selectedPlan);
       if (!currentPlan) return;
 
-      const nextPlan = ensureEditableLayoutPlan(updater(currentPlan));
+      const updatedPlan = updater(currentPlan);
+      const nextPlan = ensureEditableLayoutPlan({
+        ...updatedPlan,
+        layoutTree: undefined,
+      });
       if (!nextPlan) return;
 
       setEditablePlan(nextPlan);
@@ -654,11 +698,11 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
 
     setIsSubmittingPrompt(true);
     try {
-      await onRegenerateLayoutCandidates(normalizedPrompt);
+      await onRegenerateLayoutCandidates(normalizedPrompt, selectedSourceTableIds);
     } finally {
       setIsSubmittingPrompt(false);
     }
-  }, [onRegenerateLayoutCandidates, promptDraft, sessionId, setLayoutSystemPrompt]);
+  }, [onRegenerateLayoutCandidates, promptDraft, selectedSourceTableIds, sessionId, setLayoutSystemPrompt]);
 
   useEffect(() => {
     if (previewMode !== "image" || !analysisData || analysisData.status === "pending" || candidates.length === 0) {
@@ -796,6 +840,35 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
               placeholder="레이아웃 시안 생성 규칙을 입력하세요"
               className="mt-4 min-h-[180px] w-full resize-y rounded-2xl border border-gray-200 bg-gray-50/70 px-4 py-3 text-[12.5px] leading-relaxed text-gray-700 outline-none transition-colors placeholder:text-gray-400 focus:border-blue-500 focus:bg-white"
             />
+
+            {sourceTables.length > 0 && (
+              <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50/60 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Source Tables</p>
+                    <p className="mt-1 text-[12px] leading-relaxed text-gray-600">레이아웃에 사용할 표를 여러 개 선택하세요. 선택된 표를 조합해서 하나의 시안을 만듭니다.</p>
+                  </div>
+                  <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[10.5px] font-medium text-gray-500">{selectedSourceTableIds.length || sourceTables.length}개 선택</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {sourceTables.map((table) => {
+                    const selected = (selectedSourceTableIds.length > 0 ? selectedSourceTableIds : sourceTables.map((item) => item.id)).includes(table.id);
+                    return (
+                      <button
+                        key={table.id}
+                        type="button"
+                        onClick={() => {
+                          void toggleSourceTableSelection(table.id);
+                        }}
+                        className={`rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors ${selected ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-gray-800"}`}
+                      >
+                        {table.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="rounded-[28px] border border-gray-200/80 bg-white p-4 shadow-sm md:p-5">
@@ -971,13 +1044,7 @@ function formatPreviewNumber(value: number): string {
   return value.toLocaleString("ko-KR", { maximumFractionDigits: Math.abs(value) >= 100 ? 0 : 1 });
 }
 
-function buildPreviewDataContext(tableData?: AnalysisData["tableData"]): PreviewDataContext {
-  if (!tableData) {
-    return { columns: [], rows: [], profiles: [], primaryMetricIndex: -1, primaryDimensionIndex: -1, secondaryDimensionIndex: -1 };
-  }
-
-  const columns = tableData.columns;
-  const rows = tableData.rows;
+function createPreviewDataContext(columns: string[], rows: string[][]): PreviewDataContext {
   const profiles = columns.map<PreviewColumnProfile>((name, index) => {
     const values = rows.map((row) => normalizePreviewText(row[index]));
     const nonEmptyValues = values.filter(Boolean);
@@ -1053,6 +1120,33 @@ function buildPreviewDataContext(tableData?: AnalysisData["tableData"]): Preview
     primaryDimensionIndex: orderedDimensions[0]?.index ?? -1,
     secondaryDimensionIndex: orderedDimensions.find((profile) => profile.distinctCount <= 8)?.index ?? orderedDimensions[1]?.index ?? -1,
   };
+}
+
+function buildPreviewDataRegistry(tableData?: AnalysisData["tableData"]): PreviewDataRegistry {
+  const emptyContext = { columns: [], rows: [], profiles: [], primaryMetricIndex: -1, primaryDimensionIndex: -1, secondaryDimensionIndex: -1 };
+  if (!tableData) {
+    return { defaultContext: emptyContext, contextsByTableId: {} };
+  }
+
+  const defaultContext = createPreviewDataContext(tableData.columns, tableData.rows);
+  const contextsByTableId = Object.fromEntries(
+    (tableData.logicalTables ?? []).map((table) => [table.id, createPreviewDataContext(table.columns, table.rows)])
+  );
+
+  return { defaultContext, contextsByTableId };
+}
+
+function resolvePreviewDataContext(registry: PreviewDataRegistry, tableId?: string, sourceTableIds?: string[]): PreviewDataContext {
+  if (tableId && registry.contextsByTableId[tableId]) {
+    return registry.contextsByTableId[tableId];
+  }
+
+  const firstSectionTableId = sourceTableIds?.find((candidate) => registry.contextsByTableId[candidate]);
+  if (firstSectionTableId) {
+    return registry.contextsByTableId[firstSectionTableId];
+  }
+
+  return registry.defaultContext;
 }
 
 function findColumnIndex(context: PreviewDataContext, preferredName?: string, options?: { requireNumeric?: boolean; exclude?: number[] }): number {
@@ -1223,7 +1317,8 @@ function buildStackedPreviewChart(
   };
 }
 
-function buildPreparedPreviewChart(chart: LayoutChartSpec, context: PreviewDataContext): PreparedPreviewChart {
+function buildPreparedPreviewChart(chart: LayoutChartSpec, registry: PreviewDataRegistry, sourceTableIds?: string[]): PreparedPreviewChart {
+  const context = resolvePreviewDataContext(registry, chart.tableId, sourceTableIds);
   const metricIndex = resolveMetricIndex(context, chart.metric);
   const dimensionIndex = resolveDimensionIndex(context, chart.dimension, metricIndex);
 
@@ -1398,7 +1493,8 @@ function buildPreviewChartConfig(preview: PreparedPreviewChart): ChartConfigurat
   };
 }
 
-function buildPreviewKpis(section: LayoutSection, context: PreviewDataContext): PreviewKpiItem[] {
+function buildPreviewKpis(section: LayoutSection, registry: PreviewDataRegistry): PreviewKpiItem[] {
+  const context = resolvePreviewDataContext(registry, section.items?.[0]?.tableId, section.sourceTableIds);
   const metricIndex = resolveMetricIndex(context, undefined);
   const dimensionIndex = resolveDimensionIndex(context, undefined, metricIndex);
   const metricLabel = context.columns[metricIndex] ?? "핵심 지표";
@@ -1456,20 +1552,20 @@ function buildPreviewKpis(section: LayoutSection, context: PreviewDataContext): 
   });
 }
 
-function buildEditableKpiItems(section: LayoutSection, context: PreviewDataContext): LayoutKpiItem[] {
-  return buildPreviewKpis(section, context).map(({ id, label, value }) => ({
+function buildEditableKpiItems(section: LayoutSection, registry: PreviewDataRegistry): LayoutKpiItem[] {
+  return buildPreviewKpis(section, registry).map(({ id, label, value }) => ({
     id,
     label: label.trim() || "지표",
     value: value.trim() || "-",
   }));
 }
 
-function ensureSectionItems(section: LayoutSection, context: PreviewDataContext): LayoutSection {
+function ensureSectionItems(section: LayoutSection, registry: PreviewDataRegistry): LayoutSection {
   if (section.type !== "kpi-group") {
     return section;
   }
 
-  const nextItems = section.items && section.items.length > 0 ? section.items : buildEditableKpiItems(section, context);
+  const nextItems = section.items && section.items.length > 0 ? section.items : buildEditableKpiItems(section, registry);
   return {
     ...section,
     items: nextItems,
@@ -1907,7 +2003,7 @@ function HtmlSectionPreview({
   plan: LayoutPlan;
   section: LayoutSection;
   analysisData: AnalysisData | null;
-  previewDataContext: PreviewDataContext;
+  previewDataContext: PreviewDataRegistry;
   compact?: boolean;
   editable?: boolean;
   selectedElementId?: string | null;
@@ -1982,7 +2078,7 @@ function HtmlSectionPreview({
                 <div className="h-full px-2 py-2">
                   <HtmlChartCard
                     chart={chart}
-                    preview={buildPreparedPreviewChart(chart, previewDataContext)}
+                          preview={buildPreparedPreviewChart(chart, previewDataContext, section.sourceTableIds)}
                     compact={compact}
                     titleContent={
                       <EditableTextSlot
@@ -2063,7 +2159,7 @@ function HtmlSectionPreview({
               <HtmlChartCard
                 key={chart.id}
                 chart={chart}
-                preview={buildPreparedPreviewChart(chart, previewDataContext)}
+                          preview={buildPreparedPreviewChart(chart, previewDataContext, section.sourceTableIds)}
                 compact={compact}
                 titleContent={
                   <EditableTextSlot
@@ -2117,7 +2213,7 @@ function HtmlSectionPreview({
   }
 
   if (section.type === "kpi-group") {
-    const kpis = buildPreviewKpis(section, previewDataContext);
+  const kpis = buildPreviewKpis(section, previewDataContext);
     if (editable && section.titleLayout) {
       return (
         <section className="relative h-full">
@@ -2181,7 +2277,7 @@ function HtmlSectionPreview({
                     onCommit={(id, value) => {
                       const trimmed = value.trim() || item.label;
                       onPlanChange?.((current) => updateSection(current, section.id, (target) => {
-                        const baseItems = target.items && target.items.length > 0 ? target.items : buildEditableKpiItems(target, previewDataContext);
+  const baseItems = target.items && target.items.length > 0 ? target.items : buildEditableKpiItems(target, previewDataContext);
                         return { ...target, items: baseItems.map((baseItem) => (baseItem.id === item.id ? { ...baseItem, label: trimmed } : baseItem)) };
                       }), { persist: true });
                       onCommitEditing?.(id, value);
@@ -2203,7 +2299,7 @@ function HtmlSectionPreview({
                     onCommit={(id, value) => {
                       const trimmed = value.trim() || item.value.trim() || "-";
                       onPlanChange?.((current) => updateSection(current, section.id, (target) => {
-                        const baseItems = target.items && target.items.length > 0 ? target.items : buildEditableKpiItems(target, previewDataContext);
+  const baseItems = target.items && target.items.length > 0 ? target.items : buildEditableKpiItems(target, previewDataContext);
                         return { ...target, items: baseItems.map((baseItem) => (baseItem.id === item.id ? { ...baseItem, value: trimmed } : baseItem)) };
                       }), { persist: true });
                       onCommitEditing?.(id, value);
@@ -2260,7 +2356,7 @@ function HtmlSectionPreview({
                     const trimmed = value.trim() || item.label;
                     onPlanChange?.(
                       (current) => updateSection(current, section.id, (target) => {
-                        const baseItems = target.items && target.items.length > 0 ? target.items : buildEditableKpiItems(target, previewDataContext);
+  const baseItems = target.items && target.items.length > 0 ? target.items : buildEditableKpiItems(target, previewDataContext);
                         return {
                           ...target,
                           items: baseItems.map((baseItem) => (baseItem.id === item.id ? { ...baseItem, label: trimmed } : baseItem)),
@@ -2288,7 +2384,7 @@ function HtmlSectionPreview({
                     const trimmed = value.trim() || item.value.trim() || "-";
                     onPlanChange?.(
                       (current) => updateSection(current, section.id, (target) => {
-                        const baseItems = target.items && target.items.length > 0 ? target.items : buildEditableKpiItems(target, previewDataContext);
+  const baseItems = target.items && target.items.length > 0 ? target.items : buildEditableKpiItems(target, previewDataContext);
                         return {
                           ...target,
                           items: baseItems.map((baseItem) => (baseItem.id === item.id ? { ...baseItem, value: trimmed } : baseItem)),
@@ -2438,7 +2534,7 @@ function LayoutHtmlPreview({
 }: {
   plan: LayoutPlan;
   analysisData: AnalysisData | null;
-  previewDataContext: PreviewDataContext;
+  previewDataContext: PreviewDataRegistry;
   compact?: boolean;
   editable?: boolean;
   selectedElementId?: string | null;
@@ -2700,7 +2796,7 @@ function LayoutHtmlPreview({
           </div>
           <div className="flex flex-col items-end gap-2">
             <span className="rounded-full border border-slate-200 bg-slate-900 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white">{plan.aspectRatio}</span>
-            <span className="rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 text-[9px] font-medium text-slate-500">{previewDataContext.rows.length.toLocaleString("ko-KR")} rows</span>
+                  <span className="rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 text-[9px] font-medium text-slate-500">{previewDataContext.defaultContext.rows.length.toLocaleString("ko-KR")} rows</span>
           </div>
         </div>
       </div>

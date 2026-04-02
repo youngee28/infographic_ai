@@ -10,6 +10,7 @@ import {
 } from "@/lib/analysis-selectors";
 import { CheckPoints } from "./CheckPoints";
 import { DetailedSummary } from "./DetailedSummary";
+import { ReviewBanner } from "./ReviewBanner";
 import { SourceInventoryPanel } from "./SourceInventoryPanel";
 import { TableContextCaption } from "./TableContextCaption";
 import { ThreeLineSummary } from "./ThreeLineSummary";
@@ -21,6 +22,10 @@ interface RightPanelAnalysisProps {
 }
 
 export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanelAnalysisProps) {
+  const reviewReasons = [
+    ...(analysisData.reviewReasons ?? []),
+    ...(analysisData.sheetStructure?.reviewReason ? [analysisData.sheetStructure.reviewReason] : []),
+  ];
   const tables = getSourceTables(analysisData);
   const relations = getTableRelations(analysisData);
   const tableContextHighlights = getTableContextHighlights(analysisData);
@@ -31,6 +36,7 @@ export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanel
 
   return (
     <>
+      <ReviewBanner reasons={reviewReasons} />
       <SourceInventoryPanel tables={tables} relations={relations} />
       <TableContextCaption lines={tableContextHighlights} />
       <ThreeLineSummary summary={findingsSummary} onCitationClick={onCitationClick} />

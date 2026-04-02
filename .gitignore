@@ -1,6 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 /src/components/pdf/left-panel/원고 (2024물산업통계) 인포그래픽.xlsx
+/src/components/pdf/left-panel/it_service_rich_data_v2.csv
+src/components/pdf/left-panel/it_service_combined.csv
 
 # dependencies
 /node_modules

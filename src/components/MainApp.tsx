@@ -5,15 +5,17 @@ import { ArrowLeft, Menu, Sparkles } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useAppStore } from "@/lib/app-store";
 import { normalizeAnalysisData } from "@/lib/analysis-schema";
+import { mergeTableInterpretations, validateSheetStructure } from "@/lib/analysis-pipeline";
 import {
-  buildChartRecommendationPromptContext,
-  buildChartRecommendations,
+  buildChartRecommendationsForLogicalTables,
   rerankLayoutPlansByRecommendations,
 } from "@/lib/chart-recommendation";
 import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
 import { store, type TableSession } from "@/lib/store";
 import type {
   AnalysisData,
+  AnalysisSheetStructure,
+  AnalysisStructuredTable,
   LayoutAspectRatio,
   LayoutChartType,
   LayoutPlan,
@@ -21,8 +23,9 @@ import type {
   RawSheetGrid,
   ReferenceLine,
   SummaryVariant,
+  TableInterpretationResult,
 } from "@/lib/session-types";
-import { parseRawGridBase64, parseRawGridFile, serializeRawGridForGemini } from "@/lib/table-parser";
+import { formatSlicedGrid, parseRawGridBase64, parseRawGridFile, serializeRawGridForGemini, sliceGridByRange } from "@/lib/table-parser";
 import {
   buildTableContext,
   getDatasetTitle,
@@ -140,6 +143,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
         const sectionCandidate = section as {
           id?: unknown;
           type?: unknown;
+          sourceTableIds?: unknown;
           title?: unknown;
           charts?: unknown;
           items?: unknown;
@@ -155,6 +159,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
               if (!chart || typeof chart !== "object") return [];
               const chartCandidate = chart as {
                 id?: unknown;
+                tableId?: unknown;
                 chartType?: unknown;
                 title?: unknown;
                 goal?: unknown;
@@ -171,6 +176,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
               return [
                 {
                   id: normalizeNonEmptyString(chartCandidate.id) ?? `chart-${index + 1}-${chartIndex + 1}`,
+                  tableId: normalizeNonEmptyString(chartCandidate.tableId),
                   chartType,
                   title,
                   goal,
@@ -194,6 +200,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
                 return [
                   {
                     id: normalizeNonEmptyString((sectionCandidate as { chartId?: unknown }).chartId) ?? `chart-${index + 1}-1`,
+                    tableId: normalizeNonEmptyString((sectionCandidate as { tableId?: unknown }).tableId),
                     chartType,
                     title,
                     goal,
@@ -207,10 +214,10 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
         const items = Array.isArray(sectionCandidate.items)
           ? sectionCandidate.items.flatMap((item) => {
               if (!item || typeof item !== "object") return [];
-              const itemCandidate = item as { label?: unknown; value?: unknown };
+              const itemCandidate = item as { tableId?: unknown; label?: unknown; value?: unknown };
               const label = normalizeNonEmptyString(itemCandidate.label);
               const itemValue = normalizeNonEmptyString(itemCandidate.value);
-              return label && itemValue ? [{ id: `item-${index + 1}-${label}`, label, value: itemValue }] : [];
+              return label && itemValue ? [{ id: `item-${index + 1}-${label}`, tableId: normalizeNonEmptyString(itemCandidate.tableId), label, value: itemValue }] : [];
             })
           : undefined;
 
@@ -218,6 +225,9 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
           {
             id: normalizeNonEmptyString(sectionCandidate.id) ?? `section-${index + 1}`,
             type,
+            sourceTableIds: Array.isArray(sectionCandidate.sourceTableIds)
+              ? sectionCandidate.sourceTableIds.flatMap((tableId) => (typeof tableId === "string" && tableId.trim() ? [tableId.trim()] : []))
+              : undefined,
             title: normalizeNonEmptyString(sectionCandidate.title),
             charts: charts && charts.length > 0 ? charts : undefined,
             items: items && items.length > 0 ? items : undefined,
@@ -421,6 +431,231 @@ function serializeFallbackGridFromTableData(tableData: TableData): string {
   });
 }
 
+function getSelectedSourceTableIds(tableData: TableData, existing?: string[]): string[] {
+  if (existing && existing.length > 0) {
+    const existingSet = new Set(existing);
+    const knownIds = new Set((tableData.logicalTables ?? []).map((table) => table.id));
+    const filtered = existing.filter((tableId) => knownIds.size === 0 || knownIds.has(tableId));
+    if (filtered.length > 0) {
+      return Array.from(new Set(filtered));
+    }
+    if (existingSet.size > 0 && knownIds.size === 0) {
+      return Array.from(existingSet);
+    }
+  }
+
+  if (tableData.logicalTables && tableData.logicalTables.length > 0) {
+    return tableData.logicalTables.map((table) => table.id);
+  }
+
+  return [tableData.primaryLogicalTableId ?? "table-1"];
+}
+
+async function callGeminiJson<T>(apiKey: string, model: string, prompt: string): Promise<T> {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: "application/json" },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini API error: ${response.status} ${errorText}`);
+  }
+
+  const data = await response.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error("No JSON response from Gemini");
+  }
+
+  return JSON.parse(text) as T;
+}
+
+function buildStructurePrompt(rawGridText: string) {
+  return `당신은 스프레드시트 구조 분석기입니다.
+
+중요:
+- 의미 해석, findings, implications, cautions, 차트 추천, 인포그래픽 문구 생성은 절대 하지 마세요.
+- 오직 표 구조만 판정하세요.
+- row/col 번호는 1-indexed입니다. R1C1이 시트의 첫 번째 셀입니다.
+- 첫 번째 비어있지 않은 행을 무조건 헤더로 가정하지 마세요.
+- 시트 안에는 표가 하나일 수도, 여러 개일 수도 있습니다.
+- structure는 row-major, column-major, mixed, ambiguous 중 하나입니다.
+- mixed는 상단 행 헤더와 왼쪽 열 헤더가 동시에 존재하고 실제 수치 데이터가 교차 영역에 있는 경우입니다.
+- 제목행, 주석행, 단위행, 그룹 라벨은 데이터 본문과 분리하세요.
+
+반드시 JSON만 반환하세요.
+
+반환 형식:
+{
+  "schemaVersion": "3",
+  "sheetStructure": {
+    "sheetName": "Sheet1",
+    "tableCount": 1,
+    "needsReview": false,
+    "reviewReason": "",
+    "tables": [
+      {
+        "id": "table-1",
+        "title": "표 이름",
+        "structure": "mixed",
+        "confidence": 0.92,
+        "range": { "startRow": 1, "endRow": 10, "startCol": 1, "endCol": 8 },
+        "header": { "axis": "mixed", "headerRows": [2], "headerCols": [1, 2] },
+        "dataRegion": { "startRow": 3, "endRow": 10, "startCol": 3, "endCol": 8 },
+        "dimensions": ["구분", "항목명"],
+        "metrics": ["2019", "2020"],
+        "notes": ["표 구조 설명"],
+        "candidates": []
+      }
+    ]
+  }
+}
+
+[RAW GRID]
+${rawGridText}`.trim();
+}
+
+function buildInterpretPrompt(sheetStructure: AnalysisSheetStructure, table: AnalysisStructuredTable, slicedGridText: string) {
+  return `당신은 데이터 해석가이자 인포그래픽 기획자입니다.
+
+중요:
+- 구조를 다시 판정하지 마세요.
+- 전체 시트를 다시 해석하지 마세요.
+- 아래의 sheetStructure와 대상 표 구조를 그대로 신뢰하세요.
+- 아래 sliced grid만 사용하세요.
+- row/col 번호는 sliced grid 내부 기준 1-indexed입니다.
+
+반드시 JSON만 반환하세요.
+
+반환 형식:
+{
+  "tableId": "${table.id}",
+  "findings": [{ "text": "핵심 발견", "sourceTableIds": ["${table.id}"], "evidence": [], "priority": "high" }],
+  "implications": [{ "text": "실무 시사점", "sourceTableIds": ["${table.id}"], "evidence": [], "audience": "business" }],
+  "cautions": [{ "text": "해석상 유의점", "sourceTableIds": ["${table.id}"], "evidence": [] }],
+  "layoutPlans": [],
+  "infographicPrompt": "이 표를 인포그래픽으로 요약하는 프롬프트"
+}
+
+[판정된 구조]
+${JSON.stringify(sheetStructure, null, 2)}
+
+[대상 표]
+${JSON.stringify(table, null, 2)}
+
+[해당 range의 sliced grid]
+${slicedGridText}`.trim();
+}
+
+async function runStructureAnalysis(apiKey: string, model: string, rawGridText: string) {
+  return callGeminiJson<{ schemaVersion?: string; sheetStructure?: AnalysisSheetStructure }>(apiKey, model, buildStructurePrompt(rawGridText));
+}
+
+async function runTableInterpretation(
+  apiKey: string,
+  model: string,
+  sheetStructure: AnalysisSheetStructure,
+  table: AnalysisStructuredTable,
+  slicedGridText: string
+) {
+  return callGeminiJson<TableInterpretationResult>(apiKey, model, buildInterpretPrompt(sheetStructure, table, slicedGridText));
+}
+
+function buildComposeLayoutPrompt(params: {
+  title: string;
+  sheetStructure: AnalysisSheetStructure;
+  selectedTables: AnalysisStructuredTable[];
+  interpretationResults: TableInterpretationResult[];
+  chartRecommendations: AnalysisData["chartRecommendations"];
+  layoutPromptInstruction: string;
+}) {
+  const { title, sheetStructure, selectedTables, interpretationResults, chartRecommendations, layoutPromptInstruction } = params;
+  return `당신은 데이터 인포그래픽 레이아웃 설계 전문가입니다.
+
+중요:
+- 선택된 여러 표를 하나의 dashboard 레이아웃으로 조합하세요.
+- 레이아웃은 반드시 1개만 제안하세요.
+- 각 chart는 어느 표를 쓰는지 tableId를 반드시 넣으세요.
+- 각 section은 관련 sourceTableIds를 넣으세요.
+- 상단은 표1, 중간은 표2, 하단은 표3처럼 수직 배치해도 되고, 좌우 분할도 가능합니다.
+- 여러 표가 선택되었으면 최소 2개 이상의 서로 다른 tableId를 레이아웃에 반영하세요.
+- chart/group/KPI/takeaway/note는 선택된 표들의 서사를 연결하는 방식으로 배치하세요.
+
+반드시 JSON만 반환하세요.
+
+반환 형식:
+{
+  "layoutPlans": [
+    {
+      "id": "layout-option-1",
+      "name": "시안 1",
+      "description": "선택된 여러 표를 연결한 통합 대시보드",
+      "layoutType": "dashboard",
+      "aspectRatio": "portrait",
+      "sections": [
+        {
+          "id": "section-1",
+          "type": "chart-group",
+          "title": "섹션 제목",
+          "sourceTableIds": ["table-1", "table-2"],
+          "charts": [
+            {
+              "id": "chart-1",
+              "tableId": "table-1",
+              "chartType": "bar",
+              "title": "차트 제목",
+              "goal": "설명 목표",
+              "dimension": "차원 열",
+              "metric": "지표 열"
+            }
+          ]
+        }
+      ],
+      "visualPolicy": { "textRatio": 0.15, "chartRatio": 0.75, "iconRatio": 0.1 }
+    }
+  ],
+  "infographicPrompt": "선택된 여러 표를 함께 설명하는 한국어 인포그래픽 프롬프트"
+}
+
+[LAYOUT_SYSTEM_PROMPT]
+${layoutPromptInstruction}
+
+[SHEET_STRUCTURE]
+${JSON.stringify(sheetStructure, null, 2)}
+
+[SELECTED_TABLES]
+${JSON.stringify(selectedTables, null, 2)}
+
+[TABLE_INTERPRETATIONS]
+${JSON.stringify(interpretationResults, null, 2)}
+
+[CHART_RECOMMENDATIONS]
+${JSON.stringify(chartRecommendations ?? [], null, 2)}
+
+[TITLE]
+${title}`.trim();
+}
+
+async function runComposedLayoutGeneration(
+  apiKey: string,
+  model: string,
+  params: {
+    title: string;
+    sheetStructure: AnalysisSheetStructure;
+    selectedTables: AnalysisStructuredTable[];
+    interpretationResults: TableInterpretationResult[];
+    chartRecommendations: AnalysisData["chartRecommendations"];
+    layoutPromptInstruction: string;
+  }
+) {
+  return callGeminiJson<{ layoutPlans?: unknown; infographicPrompt?: unknown }>(apiKey, model, buildComposeLayoutPrompt(params));
+}
+
 function createPendingAnalysis(fileName: string, tableData: TableData): AnalysisData {
   const title = getDatasetTitle(fileName);
   const tableContext = buildTableContext(tableData);
@@ -444,7 +679,8 @@ function createPendingAnalysis(fileName: string, tableData: TableData): Analysis
       keywords: [],
       insights: "",
       issues: "",
-      chartRecommendations: buildChartRecommendations(tableData),
+      selectedSourceTableIds: getSelectedSourceTableIds(tableData),
+      chartRecommendations: buildChartRecommendationsForLogicalTables(tableData),
       generatedLayoutPlans: undefined,
       selectedLayoutPlanId: undefined,
       generatedLayoutPlan: undefined,
@@ -818,259 +1054,131 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
 
     try {
       const currentTableData = baseAnalysis.tableData;
-      const layoutPromptInstruction = options?.layoutPromptOverride?.trim() || layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
-      const chartRecommendations = baseAnalysis.chartRecommendations ?? buildChartRecommendations(currentTableData);
-      const chartRecommendationPrompt = buildChartRecommendationPromptContext(chartRecommendations);
-      const rawGridText = session.fileBase64
-        ? await parseRawGridBase64(session.fileBase64, session.fileName)
-            .then((grid) => serializeRawGridForGemini(grid))
-            .catch(() => serializeFallbackGridFromTableData(currentTableData))
-        : serializeFallbackGridFromTableData(currentTableData);
-      const systemInstruction = `당신은 비정형 엑셀/CSV 시트에서 표 구조를 판정하고, 그 구조를 바탕으로 인사이트와 인포그래픽 기획을 만드는 분석가입니다.
-
-핵심 원칙:
-- 첫 번째 비어있지 않은 행을 무조건 헤더로 가정하면 안 됩니다.
-- 시트 안에는 표가 하나일 수도 있고 여러 개일 수도 있습니다.
-- 각 표의 구조는 row-major, column-major, mixed, ambiguous 중 하나일 수 있습니다.
-- mixed는 상단 행 헤더와 왼쪽 열 헤더가 동시에 존재하고 실제 수치 데이터가 교차 영역에 있는 경우입니다.
-- 제목행, 메모행, 그룹 라벨, 단위 표시는 데이터 본문과 구분해야 합니다.
-- 연도(2019, 2020...)가 가로로 반복되고 지표명(사업체 수, 매출액...)이 세로로 반복되면 mixed일 가능성이 높습니다.
-
-당신은 반드시 먼저 판단해야 합니다:
-1. 시트 안에 표가 몇 개인가
-2. 각 표의 범위(range)는 어디인가
-3. 각 표의 structure는 무엇인가
-4. 각 표의 header axis / headerRows / headerCols는 무엇인가
-5. 각 표의 실제 dataRegion은 어디인가
-
-반드시 아래 JSON 구조로만 답변하세요.
-
-{
-  "schemaVersion": "3",
-  "dataset": {
-    "title": "데이터셋 핵심을 18자 내외로 요약한 제목",
-    "summary": "데이터셋 전체를 한두 문장으로 설명",
-    "tableCount": 1,
-    "sourceType": "csv"
-  },
-  "sheetStructure": {
-    "sheetName": "Sheet1",
-    "tableCount": 1,
-    "tables": [
-      {
-        "id": "table-1",
-        "title": "대표 표 이름",
-        "structure": "row-major",
-        "confidence": 0.9,
-        "range": { "startRow": 2, "endRow": 14, "startCol": 1, "endCol": 5 },
-        "header": {
-          "axis": "row",
-          "headerRows": [2]
-        },
-        "dataRegion": { "startRow": 3, "endRow": 14, "startCol": 1, "endCol": 5 },
-        "dimensions": ["대표 범주 컬럼"],
-        "metrics": ["대표 수치 컬럼"],
-        "notes": ["표 구조를 짧게 설명"]
+      const selectedSourceTableIds = getSelectedSourceTableIds(currentTableData, baseAnalysis.selectedSourceTableIds);
+      const chartRecommendations = baseAnalysis.chartRecommendations?.length
+        ? baseAnalysis.chartRecommendations.filter((item) => !item.tableId || selectedSourceTableIds.includes(item.tableId))
+        : buildChartRecommendationsForLogicalTables(currentTableData, selectedSourceTableIds);
+      const rawGrid = session.rawSheetGrid ?? (
+        session.fileBase64
+          ? await parseRawGridBase64(session.fileBase64, session.fileName).catch(() => null)
+          : null
+      );
+      if (!rawGrid) {
+        throw new Error("Raw grid unavailable");
       }
-    ]
-  },
-  "sourceInventory": {
-    "tables": [
-      {
-        "id": "table-1",
-        "name": "대표 표 이름",
-        "role": "primary",
-        "purpose": "이 표를 보는 목적",
-        "context": "이 표가 전체 분석에서 어떤 맥락인지",
-        "dimensions": ["대표 범주 컬럼"],
-        "metrics": ["대표 수치 컬럼"],
-        "grain": "month",
-        "keyTakeaway": "이 표의 핵심 한 줄"
-      }
-    ],
-    "relations": []
-  },
-  "findings": [
-    {
-      "text": "눈에 띄는 변화, 패턴, 비교 결과",
-      "sourceTableIds": ["table-1"],
-      "evidence": [],
-      "priority": "high"
-    },
-    {
-      "text": "데이터에서 직접 읽히는 두 번째 핵심 신호",
-      "sourceTableIds": ["table-1"],
-      "evidence": [],
-      "priority": "medium"
-    }
-  ],
-  "implications": [
-    {
-      "text": "실무적으로 어떤 의미인지",
-      "sourceTableIds": ["table-1"],
-      "evidence": [],
-      "audience": "business"
-    },
-    {
-      "text": "의사결정에 연결되는 한 줄 제안",
-      "sourceTableIds": ["table-1"],
-      "evidence": [],
-      "audience": "executive"
-    }
-  ],
-  "cautions": [
-    {
-      "text": "비어있는 값, 이상치, 해석상 주의점",
-      "sourceTableIds": ["table-1"],
-      "evidence": []
-    },
-    {
-      "text": "추가 확인이 필요한 컬럼 또는 패턴",
-      "sourceTableIds": ["table-1"],
-      "evidence": []
-    }
-  ],
-  "askNext": [
-    "표의 수치만으로 바로 답할 수 있는 짧은 질문",
-    "표의 수치만으로 바로 답할 수 있는 짧은 질문",
-    "표의 수치만으로 바로 답할 수 있는 짧은 질문"
-  ],
-  "visualizationBrief": {
-    "headline": "인포그래픽 헤드라인",
-    "coreMessage": "이 데이터를 어떻게 한 장으로 읽히게 할지",
-    "primaryTableId": "table-1",
-    "supportingTableIds": [],
-    "storyFlow": ["전체 흐름", "핵심 비교", "실무 시사점"],
-    "chartDirections": [
-      {
-        "tableId": "table-1",
-        "chartType": "bar",
-        "goal": "무엇을 비교/설명하는 차트인지"
-      }
-    ],
-    "tone": "practical",
-    "prompt": "이 데이터를 인포그래픽으로 만들기 위한 구체적인 한국어 프롬프트"
-  },
-  "layoutPlans": [
-    {
-      "id": "layout-option-1",
-      "name": "시안 1",
-      "description": "가장 중요한 비교 차트와 핵심 해석을 한 화면에 배치한 시안",
-      "layoutType": "dashboard",
-      "aspectRatio": "portrait",
-      "sections": [
-        {
-          "id": "header",
-          "type": "header",
-          "title": "상단 제목 영역"
-        },
-        {
-          "id": "main-chart-group",
-          "type": "chart-group",
-          "title": "핵심 비교 차트 영역",
-          "charts": [
-            {
-              "id": "main-chart",
-              "chartType": "bar",
-              "title": "가장 중요한 차트 제목",
-              "goal": "무엇을 비교/설명하는 차트인지",
-              "dimension": "비교 기준 컬럼",
-              "metric": "핵심 수치 컬럼"
-            }
-          ]
-        },
-        {
-          "id": "takeaway",
-          "type": "takeaway",
-          "title": "핵심 해석 메모",
-          "note": "차트 바로 아래에 읽혀야 할 핵심 메시지"
-        }
-      ],
-      "visualPolicy": {
-        "textRatio": 0.15,
-        "chartRatio": 0.75,
-        "iconRatio": 0.1
-      }
-    }
-  ],
-  "infographicPrompt": "이 데이터를 인포그래픽으로 만들기 위한 구체적인 한국어 프롬프트"
-}
 
-공통 규칙:
-1. dataset.tableCount와 sheetStructure.tableCount는 실제 파악한 표 개수와 일치해야 합니다.
-2. 시트 안 표 수가 불명확하면 tables를 여러 후보로 나누고 confidence를 낮추세요.
-3. structure는 row-major, column-major, mixed, ambiguous 중 하나만 사용하세요.
-4. header.axis는 row, column, mixed, ambiguous 중 하나만 사용하세요.
-5. mixed 구조가 보이면 row-major나 column-major로 억지 분류하지 말고 mixed를 사용하세요.
-6. headerRows, headerCols, dataRegion은 구조 판단에 도움이 되면 적극적으로 채우세요.
-7. findings는 2~4개, implications는 2~4개, cautions는 1~3개로 간결하게 작성하세요.
-8. askNext는 질문만 3개 작성하고 번호나 불릿을 붙이지 마세요.
-9. visualizationBrief.prompt와 infographicPrompt는 차트 유형, 강조 지표, 시각적 톤을 포함한 실무형 프롬프트로 작성하세요.
-10. 모든 evidence.pages는 빈 배열 []로 유지하세요.
-11. 반드시 한국어 JSON만 반환하고 다른 설명은 금지합니다.
-12. layoutPlans의 시안은 1개만 반환하며, sections를 비워두면 안 되고 최소 1개의 chart-group과 그 안의 유효한 charts를 포함해야 합니다.
+      const rawGridText = serializeRawGridForGemini(rawGrid);
+      const structureResponse = await runStructureAnalysis(apiKey, selectedLayoutModel, rawGridText);
+      const structureValidation = validateSheetStructure(structureResponse, rawGrid.rows);
+      const sheetStructure = structureResponse.sheetStructure;
 
-레이아웃 생성 시스템 프롬프트:
-${layoutPromptInstruction}`;
-
-      const payload = {
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-        contents: [
+      if (!structureValidation.ok || !sheetStructure) {
+        const reviewData = normalizeAnalysisData(
           {
-            role: "user",
-            parts: [
-              {
-                text: `다음은 SheetJS 기반 raw grid입니다. 먼저 시트 구조를 판정하고, 그 구조를 기준으로 인사이트와 인포그래픽 기획 결과를 JSON으로 정리해주세요.\n\n${rawGridText}${chartRecommendationPrompt ? `\n\n${chartRecommendationPrompt}` : ""}`,
-              },
-            ],
+            ...baseAnalysis,
+            schemaVersion: "3",
+            dataset: {
+              title: baseAnalysis.title || getDatasetTitle(session.fileName),
+              summary: "표 구조를 자동 판정하지 못해 확인이 필요합니다.",
+              tableCount: 0,
+              sourceType: baseAnalysis.tableData?.sourceType,
+            },
+            sheetStructure: {
+              sheetName: rawGrid.sheetName,
+              tableCount: 0,
+              needsReview: true,
+              reviewReason: structureValidation.reason || "sheetStructure missing",
+              tables: [],
+            },
+            reviewReasons: [structureValidation.reason || "sheetStructure missing"],
+            findings: [],
+            implications: [],
+            cautions: [{ text: structureValidation.reason || "sheetStructure missing", sourceTableIds: [], evidence: [] }],
+            issues: structureValidation.reason || "sheetStructure missing",
+            chartRecommendations,
+            selectedSourceTableIds,
+            tableData: baseAnalysis.tableData,
+            tableContext: baseAnalysis.tableContext,
+            status: "complete",
           },
-        ],
-        generationConfig: { responseMimeType: "application/json" },
-      };
+          baseAnalysis.title || getDatasetTitle(session.fileName)
+        );
+        const updatedSession = { ...session, analysisData: reviewData };
+        await store.saveSession(updatedSession);
+        if (isTargetSessionActive()) setAnalysisData(reviewData);
+        await loadSessions();
+        return;
+      }
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${selectedLayoutModel}:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        }
+      const synthesizedReviewReasons = [
+        ...(sheetStructure.reviewReason ? [sheetStructure.reviewReason] : []),
+        ...sheetStructure.tables.flatMap((table) => table.reviewReasons ?? []),
+        ...sheetStructure.tables.filter((table) => table.confidence < 0.7).map((table) => `${table.id}: confidence ${table.confidence.toFixed(2)}`),
+        ...sheetStructure.tables.filter((table) => table.needsReview).map((table) => `${table.id}: 구조 재확인 필요`),
+      ];
+      const needsReview = Boolean(
+        sheetStructure.tableCount === 0 ||
+        sheetStructure.needsReview ||
+        sheetStructure.tables.some((table) => table.confidence < 0.7 || table.needsReview)
+      );
+      if (needsReview) {
+        const reviewReasons = synthesizedReviewReasons.length > 0
+          ? synthesizedReviewReasons
+          : [sheetStructure.tableCount === 0 ? "표 구조를 판정하지 못했습니다." : "표 구조 재확인이 필요합니다."];
+        const reviewData = normalizeAnalysisData(
+          {
+            ...baseAnalysis,
+            schemaVersion: "3",
+            dataset: {
+              title: baseAnalysis.title || getDatasetTitle(session.fileName),
+              summary: "표 구조 신뢰도가 낮아 재확인이 필요합니다.",
+              tableCount: sheetStructure.tableCount,
+              sourceType: baseAnalysis.tableData?.sourceType,
+            },
+            sheetStructure,
+            reviewReasons,
+            findings: [],
+            implications: [],
+            cautions: reviewReasons.map((reason) => ({ text: reason, sourceTableIds: [], evidence: [] })),
+            issues: reviewReasons.join("\n"),
+            chartRecommendations,
+            selectedSourceTableIds,
+            tableData: baseAnalysis.tableData,
+            tableContext: baseAnalysis.tableContext,
+            status: "complete",
+          },
+          baseAnalysis.title || getDatasetTitle(session.fileName)
+        );
+        const updatedSession = { ...session, analysisData: reviewData };
+        await store.saveSession(updatedSession);
+        if (isTargetSessionActive()) setAnalysisData(reviewData);
+        await loadSessions();
+        return;
+      }
+
+      const interpretationResults = await Promise.all(
+        sheetStructure.tables.map((table) => {
+          const sliced = sliceGridByRange(rawGrid.rows, table.range);
+          const slicedText = formatSlicedGrid(sliced, { originalRange: table.range });
+          return runTableInterpretation(apiKey, selectedLayoutModel, sheetStructure, table, slicedText);
+        })
       );
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("AI API Error:", response.status, errorText);
-        throw new Error(`AI API error: ${response.statusText}`);
-      }
-
-      const responseData = await response.json();
-      const responseText = responseData.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!responseText) {
-        throw new Error("No response from AI API");
-      }
-
-      const parsed = JSON.parse(responseText) as {
-        schemaVersion?: unknown;
-        title?: unknown;
-        dataset?: unknown;
-        sheetStructure?: unknown;
-        sourceInventory?: unknown;
-        findings?: unknown;
-        implications?: unknown;
-        cautions?: unknown;
-        askNext?: unknown;
-        visualizationBrief?: unknown;
-        summaries?: unknown;
-        keywords?: unknown;
-        insights?: unknown;
-        issues?: unknown;
-        layoutPlans?: unknown;
-        layoutPlan?: unknown;
-        infographicPrompt?: unknown;
-      };
-
+      const merged = mergeTableInterpretations({ sheetStructure }, interpretationResults);
+      const layoutPromptInstruction = options?.layoutPromptOverride?.trim() || layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
+      const selectedTables = sheetStructure.tables.filter((table) => selectedSourceTableIds.includes(table.id));
+      const selectedInterpretations = interpretationResults.filter((result) => selectedSourceTableIds.includes(result.tableId));
+      const composedLayout = await runComposedLayoutGeneration(apiKey, selectedLayoutModel, {
+        title: baseAnalysis.title || getDatasetTitle(session.fileName),
+        sheetStructure,
+        selectedTables: selectedTables.length > 0 ? selectedTables : sheetStructure.tables,
+        interpretationResults: selectedInterpretations.length > 0 ? selectedInterpretations : interpretationResults,
+        chartRecommendations,
+        layoutPromptInstruction,
+      });
       const normalizedLayoutPlans = rerankLayoutPlansByRecommendations(
-        normalizeLayoutPlans(parsed.layoutPlans ?? parsed.layoutPlan) ??
+        normalizeLayoutPlans(composedLayout.layoutPlans) ??
+          merged.generatedLayoutPlans ??
           baseAnalysis.generatedLayoutPlans ??
           (baseAnalysis.generatedLayoutPlan ? [baseAnalysis.generatedLayoutPlan] : baseAnalysis.layoutPlan ? [baseAnalysis.layoutPlan] : undefined),
         chartRecommendations
@@ -1080,39 +1188,19 @@ ${layoutPromptInstruction}`;
         baseAnalysis.selectedLayoutPlanId,
         baseAnalysis.layoutPlan ?? baseAnalysis.generatedLayoutPlan
       );
-      const visualizationPrompt =
-        parsed.visualizationBrief && typeof parsed.visualizationBrief === "object" && parsed.visualizationBrief !== null
-          ? (() => {
-              const candidate = parsed.visualizationBrief as { prompt?: unknown };
-              return typeof candidate.prompt === "string" ? candidate.prompt.trim() : "";
-            })()
-          : "";
-      const generatedInfographicPrompt =
-        typeof parsed.infographicPrompt === "string" && parsed.infographicPrompt.trim()
-          ? parsed.infographicPrompt.trim()
-          : visualizationPrompt || baseAnalysis.generatedInfographicPrompt || baseAnalysis.infographicPrompt || "";
+      const generatedInfographicPrompt = options?.layoutPromptOverride?.trim() || (typeof composedLayout.infographicPrompt === "string" ? composedLayout.infographicPrompt.trim() : "") || merged.infographicPrompt || baseAnalysis.generatedInfographicPrompt || baseAnalysis.infographicPrompt || layoutPromptInstruction;
       const rawAnalysis = {
         ...baseAnalysis,
-        schemaVersion: parsed.schemaVersion === "3" ? "3" : "3",
-        title:
-          typeof parsed.title === "string" && parsed.title.trim()
-            ? parsed.title.trim()
-            : baseAnalysis.title || getDatasetTitle(session.fileName),
-        dataset: parsed.dataset,
-        sheetStructure: parsed.sheetStructure,
-        sourceInventory: parsed.sourceInventory,
-        findings: parsed.findings,
-        implications: parsed.implications,
-        cautions: parsed.cautions,
-        askNext: parsed.askNext,
-        visualizationBrief: parsed.visualizationBrief,
-        summaries: normalizeSummaries(parsed.summaries),
-        keywords: Array.isArray(parsed.keywords)
-          ? parsed.keywords.filter((keyword): keyword is string => typeof keyword === "string" && keyword.trim().length > 0)
-          : [],
-        insights: typeof parsed.insights === "string" ? parsed.insights.trim() : "",
-        issues: normalizeIssues(parsed.issues),
+        ...merged,
+        schemaVersion: "3",
+        dataset: {
+          title: baseAnalysis.title || getDatasetTitle(session.fileName),
+          summary: baseAnalysis.dataset?.summary || "구조 판정 이후 표별 해석을 완료했습니다.",
+          tableCount: sheetStructure.tableCount,
+          sourceType: baseAnalysis.tableData?.sourceType,
+        },
         chartRecommendations,
+        selectedSourceTableIds,
         generatedLayoutPlans: normalizedLayoutPlans,
         selectedLayoutPlanId: selectedLayoutPlan?.id,
         generatedLayoutPlan: normalizedLayoutPlans?.[0] ?? selectedLayoutPlan,
@@ -1123,10 +1211,7 @@ ${layoutPromptInstruction}`;
         tableContext: baseAnalysis.tableContext,
         status: "complete" as const,
       };
-      const normalizedData: AnalysisData = normalizeAnalysisData(
-        rawAnalysis,
-        baseAnalysis.title || getDatasetTitle(session.fileName)
-      );
+      const normalizedData: AnalysisData = normalizeAnalysisData(rawAnalysis, baseAnalysis.title || getDatasetTitle(session.fileName));
 
       const updatedSession = { ...session, analysisData: normalizedData };
       await store.saveSession(updatedSession);
@@ -1149,15 +1234,32 @@ ${layoutPromptInstruction}`;
     }
   };
 
-  const handleRegenerateLayoutCandidates = async (layoutPromptOverride: string) => {
+  const handleRegenerateLayoutCandidates = async (layoutPromptOverride: string, selectedSourceTableIds?: string[]) => {
     if (!currentSessionId) return;
 
     const session = await store.getSession(currentSessionId);
     if (!session) return;
 
     const { session: hydratedSession, analysis } = await hydrateSessionAnalysis(session);
+    const nextAnalysis = selectedSourceTableIds?.length
+      ? normalizeAnalysisData(
+          {
+            ...analysis,
+            selectedSourceTableIds,
+            chartRecommendations: analysis.tableData
+              ? buildChartRecommendationsForLogicalTables(analysis.tableData, selectedSourceTableIds)
+              : analysis.chartRecommendations,
+          },
+          analysis.title || getDatasetTitle(hydratedSession.fileName)
+        )
+      : analysis;
+
+    if (nextAnalysis !== analysis) {
+      await store.saveSession({ ...hydratedSession, analysisData: nextAnalysis });
+    }
+
     await runAnalysisForSession(
-      { ...hydratedSession, analysisData: analysis },
+      { ...hydratedSession, analysisData: nextAnalysis },
       { layoutPromptOverride }
     );
   };
@@ -1258,7 +1360,11 @@ ${layoutPromptInstruction}`;
               : buildSourceInventory(session.fileName, nextTableData, buildTableContext(nextTableData)),
             tableData: nextTableData,
             tableContext: buildTableContext(nextTableData),
-            chartRecommendations: buildChartRecommendations(nextTableData),
+            selectedSourceTableIds: getSelectedSourceTableIds(nextTableData, session.analysisData.selectedSourceTableIds),
+            chartRecommendations: buildChartRecommendationsForLogicalTables(
+              nextTableData,
+              getSelectedSourceTableIds(nextTableData, session.analysisData.selectedSourceTableIds)
+            ),
             status: "pending",
           },
           getDatasetTitle(session.fileName)

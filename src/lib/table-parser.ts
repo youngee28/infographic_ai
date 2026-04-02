@@ -259,3 +259,26 @@ export const serializeRawGridForGemini = (grid: RawSheetGrid, options?: { maxRow
     .filter(Boolean)
     .join("\n");
 };
+
+export function sliceGridByRange(grid: string[][], range: { startRow: number; endRow: number; startCol: number; endCol: number }): string[][] {
+  return grid
+    .slice(range.startRow - 1, range.endRow)
+    .map((row) => row.slice(range.startCol - 1, range.endCol));
+}
+
+export function formatSlicedGrid(
+  slicedGrid: string[][],
+  options?: { originalRange?: { startRow: number; endRow: number; startCol: number; endCol: number } }
+): string {
+  const header = options?.originalRange
+    ? `[원본 범위] R${options.originalRange.startRow}-R${options.originalRange.endRow} / C${options.originalRange.startCol}-C${options.originalRange.endCol}`
+    : "";
+
+  const body = slicedGrid
+    .map((row, rowIndex) =>
+      `R${rowIndex + 1}: ${row.map((cell, columnIndex) => `C${columnIndex + 1}=${String(cell ?? "").replace(/\s+/g, " ").trim() || "∅"}`).join(" | ")}`
+    )
+    .join("\n");
+
+  return [header, body].filter(Boolean).join("\n");
+}

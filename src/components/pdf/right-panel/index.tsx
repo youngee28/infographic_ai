@@ -14,7 +14,7 @@ interface RightPanelProps {
   isAnalyzing?: boolean;
   sessionId?: string | null;
   fileName?: string;
-  onRegenerateLayoutCandidates?: (layoutPromptOverride: string) => Promise<void>;
+  onRegenerateLayoutCandidates?: (layoutPromptOverride: string, selectedSourceTableIds?: string[]) => Promise<void>;
   onCitationClick?: (page: number) => void;
   onShareSession?: () => void;
   showImageTab?: boolean;

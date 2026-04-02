@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AnalysisData } from "@/lib/session-types";
 
 export const chartRecommendationSchema = z.object({
+  tableId: z.string().trim().optional(),
   chartType: z.enum(["bar", "line", "donut", "pie", "stacked-bar", "map"]),
   dimension: z.string().trim().min(1),
   metric: z.string().trim().min(1),
@@ -130,8 +131,105 @@ export const layoutGeometrySchema = z.object({
   }
 });
 
+export const layoutBlockStyleSchema = z.object({
+  backgroundColor: z.string().trim().optional(),
+  borderColor: z.string().trim().optional(),
+  borderWidth: z.number().nonnegative().optional(),
+  borderRadius: z.number().nonnegative().optional(),
+  padding: z.object({
+    top: z.number().nonnegative(),
+    right: z.number().nonnegative(),
+    bottom: z.number().nonnegative(),
+    left: z.number().nonnegative(),
+  }).optional(),
+  textColor: z.string().trim().optional(),
+  fontSize: z.number().positive().optional(),
+  fontWeight: z.number().positive().optional(),
+  lineHeight: z.number().positive().optional(),
+  textAlign: z.enum(["left", "center", "right"]).optional(),
+});
+
+const layoutBlockBaseSchema = z.object({
+  id: z.string().trim().min(1),
+  type: z.enum(["group", "heading", "text", "chart", "kpi"]),
+  region: z.enum(["header", "canvas"]),
+  parentId: z.string().trim().min(1).optional(),
+  childIds: z.array(z.string().trim().min(1)).optional(),
+  name: z.string().trim().optional(),
+  layout: layoutGeometrySchema,
+  style: layoutBlockStyleSchema.optional(),
+  locked: z.boolean().optional(),
+  hidden: z.boolean().optional(),
+  zIndex: z.number().int().optional(),
+});
+
+export const layoutGroupBlockSchema = layoutBlockBaseSchema.extend({
+  type: z.literal("group"),
+  childIds: z.array(z.string().trim().min(1)).default([]),
+  content: z.object({
+    role: z.enum(["header", "chart-group", "kpi-group", "takeaway", "note", "generic"]),
+    sectionId: z.string().trim().optional(),
+  }),
+});
+
+export const layoutHeadingBlockSchema = layoutBlockBaseSchema.extend({
+  type: z.literal("heading"),
+  content: z.object({
+    text: z.string(),
+    sectionId: z.string().trim().optional(),
+  }),
+});
+
+export const layoutTextBlockSchema = layoutBlockBaseSchema.extend({
+  type: z.literal("text"),
+  content: z.object({
+    text: z.string(),
+    sectionId: z.string().trim().optional(),
+  }),
+});
+
+export const layoutChartBlockSchema = layoutBlockBaseSchema.extend({
+  type: z.literal("chart"),
+  content: z.object({
+    sectionId: z.string().trim().min(1),
+    chartId: z.string().trim().min(1),
+    tableId: z.string().trim().optional(),
+    chartType: z.enum(["bar", "line", "donut", "pie", "stacked-bar", "map"]),
+    title: z.string(),
+    goal: z.string(),
+    dimension: z.string().trim().optional(),
+    metric: z.string().trim().optional(),
+  }),
+});
+
+export const layoutKpiBlockSchema = layoutBlockBaseSchema.extend({
+  type: z.literal("kpi"),
+  content: z.object({
+    sectionId: z.string().trim().min(1),
+    itemId: z.string().trim().min(1),
+    tableId: z.string().trim().optional(),
+    label: z.string(),
+    value: z.string(),
+    note: z.string().optional(),
+  }),
+});
+
+export const layoutBlockSchema = z.discriminatedUnion("type", [
+  layoutGroupBlockSchema,
+  layoutHeadingBlockSchema,
+  layoutTextBlockSchema,
+  layoutChartBlockSchema,
+  layoutKpiBlockSchema,
+]);
+
+export const layoutBlockTreeSchema = z.object({
+  rootIds: z.array(z.string().trim().min(1)).default([]),
+  blocks: z.record(z.string().trim().min(1), layoutBlockSchema),
+});
+
 export const layoutChartSpecSchema = z.object({
   id: z.string().trim().min(1),
+  tableId: z.string().trim().optional(),
   chartType: z.enum(["bar", "line", "donut", "pie", "stacked-bar", "map"]),
   title: z.string().trim().min(1),
   goal: z.string().trim().min(1),
@@ -142,6 +240,7 @@ export const layoutChartSpecSchema = z.object({
 
 export const layoutKpiItemSchema = z.object({
   id: z.string().trim().min(1),
+  tableId: z.string().trim().optional(),
   label: z.string().trim().min(1),
   value: z.string().trim().min(1),
   layout: layoutGeometrySchema.optional(),
@@ -150,6 +249,7 @@ export const layoutKpiItemSchema = z.object({
 export const layoutSectionSchema = z.object({
   id: z.string().trim().min(1),
   type: z.enum(["header", "chart-group", "kpi-group", "takeaway", "note"]),
+  sourceTableIds: z.array(z.string().trim().min(1)).optional(),
   title: z.string().trim().optional(),
   layout: layoutGeometrySchema.optional(),
   titleLayout: layoutGeometrySchema.optional(),
@@ -171,11 +271,21 @@ export const layoutPlanSchema = z.object({
   aspectRatio: z.enum(["portrait", "square", "landscape"]),
   name: z.string().trim().optional(),
   description: z.string().trim().optional(),
+  layoutTree: layoutBlockTreeSchema.optional(),
   headerTitleLayout: layoutGeometrySchema.optional(),
   headerSummaryLayout: layoutGeometrySchema.optional(),
   previewImageDataUrl: z.string().optional(),
   sections: z.array(layoutSectionSchema).default([]),
   visualPolicy: layoutVisualPolicySchema,
+});
+
+export const tableInterpretationResultSchema = z.object({
+  tableId: z.string().trim().min(1),
+  findings: z.array(narrativeItemSchema).default([]),
+  implications: z.array(narrativeItemSchema).default([]),
+  cautions: z.array(narrativeItemSchema).default([]),
+  layoutPlans: z.array(layoutPlanSchema).optional(),
+  infographicPrompt: z.string().trim().optional(),
 });
 
 function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1"): z.infer<typeof layoutPlanSchema> | undefined {
@@ -188,6 +298,7 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
     previewImageDataUrl?: unknown;
     layoutType?: unknown;
     aspectRatio?: unknown;
+    layoutTree?: unknown;
     headerTitleLayout?: unknown;
     headerSummaryLayout?: unknown;
     sections?: unknown;
@@ -208,6 +319,11 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
           return { x, y, width, height };
         })()
       : undefined;
+  };
+
+  const normalizeLayoutTree = (value: unknown) => {
+    const parsed = layoutBlockTreeSchema.safeParse(value);
+    return parsed.success ? parsed.data : undefined;
   };
 
   const aspectRatio = candidate.aspectRatio;
@@ -343,6 +459,7 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
     aspectRatio,
     name: typeof candidate.name === "string" && candidate.name.trim() ? candidate.name.trim() : undefined,
     description: typeof candidate.description === "string" && candidate.description.trim() ? candidate.description.trim() : undefined,
+    layoutTree: normalizeLayoutTree(candidate.layoutTree),
     headerTitleLayout: normalizeGeometry(candidate.headerTitleLayout),
     headerSummaryLayout: normalizeGeometry(candidate.headerSummaryLayout),
     previewImageDataUrl: typeof candidate.previewImageDataUrl === "string" && candidate.previewImageDataUrl.trim() ? candidate.previewImageDataUrl.trim() : undefined,
@@ -443,6 +560,7 @@ export const analysisDataSchema = z.object({
   keywords: z.array(z.string()).default([]),
   insights: z.string().default(""),
   issues: z.union([z.string(), z.array(referenceLineSchema)]).default(""),
+  selectedSourceTableIds: z.array(z.string().trim().min(1)).optional(),
   chartRecommendations: z.array(chartRecommendationSchema).optional(),
   generatedLayoutPlans: z.preprocess((value) => normalizeLegacyLayoutPlans(value), z.array(layoutPlanSchema).optional()),
   selectedLayoutPlanId: z.string().trim().optional(),
@@ -693,14 +811,19 @@ function deriveVisualizationBrief(data: z.infer<typeof analysisDataSchema>, titl
     Array.isArray(data.issues) ? data.issues[0]?.text : data.issues,
   ]);
 
+  const selectedSourceTableIds = data.selectedSourceTableIds?.length
+    ? compactUnique(data.selectedSourceTableIds)
+    : [primaryTableId];
+  const effectivePrimaryTableId = selectedSourceTableIds[0] ?? primaryTableId;
+
   return {
     headline,
     coreMessage,
-    primaryTableId,
-    supportingTableIds: [],
+    primaryTableId: effectivePrimaryTableId,
+    supportingTableIds: selectedSourceTableIds.slice(1),
     storyFlow: storyFlow.length > 0 ? storyFlow : ["핵심 흐름 파악", "비교 포인트 정리", "실무 시사점 제안"],
     chartDirections: (data.chartRecommendations ?? []).slice(0, 3).map((item) => ({
-      tableId: primaryTableId,
+      tableId: item.tableId?.trim() || effectivePrimaryTableId,
       chartType: item.chartType,
       goal: item.reason,
     })),
@@ -810,6 +933,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       keywords: [],
       insights: "",
       issues: "",
+      selectedSourceTableIds: undefined,
       chartRecommendations: undefined,
       generatedLayoutPlans: undefined,
       selectedLayoutPlanId: undefined,
@@ -819,6 +943,15 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       infographicPrompt: "",
       tableContext: rawTableContext,
       tableData: rawTableData?.success ? rawTableData.data : undefined,
+      reviewReasons: raw?.reviewReasons && Array.isArray(raw.reviewReasons)
+        ? raw.reviewReasons.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        : undefined,
+      tableInterpretations: raw?.tableInterpretations && Array.isArray(raw.tableInterpretations)
+        ? raw.tableInterpretations.flatMap((item) => {
+            const parsedInterpretation = tableInterpretationResultSchema.safeParse(item);
+            return parsedInterpretation.success ? [parsedInterpretation.data] : [];
+          })
+        : undefined,
       status: rawStatus ?? (hasContent ? "complete" : "pending"),
     };
   }
@@ -903,6 +1036,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
     keywords: deriveKeywords(data, sourceInventory),
     insights: askNext.join("\n"),
     issues: normalizedIssues,
+    selectedSourceTableIds: data.selectedSourceTableIds?.length ? compactUnique(data.selectedSourceTableIds) : undefined,
     chartRecommendations: data.chartRecommendations,
     generatedLayoutPlans: data.generatedLayoutPlans,
     selectedLayoutPlanId: data.selectedLayoutPlanId,
@@ -912,6 +1046,8 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
     infographicPrompt: data.infographicPrompt ?? visualizationBrief?.prompt,
     tableContext: data.tableContext,
     tableData: data.tableData,
+    reviewReasons: data.reviewReasons,
+    tableInterpretations: data.tableInterpretations,
     status: data.status,
   };
 }

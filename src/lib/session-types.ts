@@ -133,6 +133,8 @@ export interface NarrativeItem {
 export type LayoutAspectRatio = "portrait" | "square" | "landscape";
 export type LayoutSectionType = "header" | "chart-group" | "kpi-group" | "takeaway" | "note";
 export type LayoutChartType = "bar" | "line" | "donut" | "pie" | "stacked-bar" | "map";
+export type LayoutBlockRegion = "header" | "canvas";
+export type LayoutBlockType = "group" | "heading" | "text" | "chart" | "kpi";
 
 export interface LayoutGeometry {
   x: number;
@@ -141,7 +143,98 @@ export interface LayoutGeometry {
   height: number;
 }
 
+export interface LayoutBlockStyle {
+  backgroundColor?: string;
+  borderColor?: string;
+  borderWidth?: number;
+  borderRadius?: number;
+  padding?: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
+  textColor?: string;
+  fontSize?: number;
+  fontWeight?: number;
+  lineHeight?: number;
+  textAlign?: "left" | "center" | "right";
+}
+
+export interface LayoutBlockBase {
+  id: string;
+  type: LayoutBlockType;
+  region: LayoutBlockRegion;
+  parentId?: string;
+  childIds?: string[];
+  name?: string;
+  layout: LayoutGeometry;
+  style?: LayoutBlockStyle;
+  locked?: boolean;
+  hidden?: boolean;
+  zIndex?: number;
+}
+
+export interface LayoutGroupBlock extends LayoutBlockBase {
+  type: "group";
+  content: {
+    role: "header" | "chart-group" | "kpi-group" | "takeaway" | "note" | "generic";
+    sectionId?: string;
+  };
+  childIds: string[];
+}
+
+export interface LayoutHeadingBlock extends LayoutBlockBase {
+  type: "heading";
+  content: {
+    text: string;
+    sectionId?: string;
+  };
+}
+
+export interface LayoutTextBlock extends LayoutBlockBase {
+  type: "text";
+  content: {
+    text: string;
+    sectionId?: string;
+  };
+}
+
+export interface LayoutChartBlock extends LayoutBlockBase {
+  type: "chart";
+  content: {
+    sectionId: string;
+    chartId: string;
+    tableId?: string;
+    chartType: LayoutChartType;
+    title: string;
+    goal: string;
+    dimension?: string;
+    metric?: string;
+  };
+}
+
+export interface LayoutKpiBlock extends LayoutBlockBase {
+  type: "kpi";
+  content: {
+    sectionId: string;
+    itemId: string;
+    tableId?: string;
+    label: string;
+    value: string;
+    note?: string;
+  };
+}
+
+export type LayoutBlock = LayoutGroupBlock | LayoutHeadingBlock | LayoutTextBlock | LayoutChartBlock | LayoutKpiBlock;
+
+export interface LayoutBlockTree {
+  rootIds: string[];
+  blocks: Record<string, LayoutBlock>;
+}
+
 export interface ChartRecommendation {
+  tableId?: string;
   chartType: LayoutChartType;
   dimension: string;
   metric: string;
@@ -151,6 +244,7 @@ export interface ChartRecommendation {
 
 export interface LayoutChartSpec {
   id: string;
+  tableId?: string;
   chartType: LayoutChartType;
   title: string;
   goal: string;
@@ -161,6 +255,7 @@ export interface LayoutChartSpec {
 
 export interface LayoutKpiItem {
   id: string;
+  tableId?: string;
   label: string;
   value: string;
   layout?: LayoutGeometry;
@@ -169,6 +264,7 @@ export interface LayoutKpiItem {
 export interface LayoutSection {
   id: string;
   type: LayoutSectionType;
+  sourceTableIds?: string[];
   title?: string;
   layout?: LayoutGeometry;
   titleLayout?: LayoutGeometry;
@@ -190,6 +286,7 @@ export interface LayoutPlan {
   aspectRatio: LayoutAspectRatio;
   name?: string;
   description?: string;
+  layoutTree?: LayoutBlockTree;
   headerTitleLayout?: LayoutGeometry;
   headerSummaryLayout?: LayoutGeometry;
   previewImageDataUrl?: string;
@@ -245,6 +342,7 @@ export interface AnalysisData {
   keywords: string[];
   insights: string;
   issues: string | ReferenceLine[];
+  selectedSourceTableIds?: string[];
   chartRecommendations?: ChartRecommendation[];
   generatedLayoutPlans?: LayoutPlan[];
   selectedLayoutPlanId?: string;

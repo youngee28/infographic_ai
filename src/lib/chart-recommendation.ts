@@ -293,6 +293,31 @@ export function buildChartRecommendations(tableData: Pick<NormalizedTable, "colu
     .slice(0, 3);
 }
 
+export function buildChartRecommendationsForLogicalTables(
+  tableData: Pick<NormalizedTable, "logicalTables" | "primaryLogicalTableId" | "columns" | "rows">,
+  selectedTableIds?: string[]
+): ChartRecommendation[] {
+  const logicalTables = tableData.logicalTables ?? [];
+  if (logicalTables.length === 0) {
+    return buildChartRecommendations(tableData).map((recommendation) => ({
+      ...recommendation,
+      tableId: tableData.primaryLogicalTableId ?? "table-1",
+    }));
+  }
+
+  const allowedTableIds = selectedTableIds?.length ? new Set(selectedTableIds) : null;
+  return logicalTables
+    .filter((table) => !allowedTableIds || allowedTableIds.has(table.id))
+    .flatMap((table) =>
+      buildChartRecommendations({ columns: table.columns, rows: table.rows }).map((recommendation) => ({
+        ...recommendation,
+        tableId: table.id,
+      }))
+    )
+    .sort((left, right) => right.score - left.score || left.chartType.localeCompare(right.chartType))
+    .slice(0, 6);
+}
+
 function normalizeRecommendationKey(value?: string): string {
   return value?.trim().toLowerCase() ?? "";
 }

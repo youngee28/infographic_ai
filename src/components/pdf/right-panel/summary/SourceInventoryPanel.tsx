@@ -1,6 +1,21 @@
 import { Database } from "lucide-react";
 import type { SourceTable, TableRelation } from "@/lib/session-types";
 
+function formatStructureLabel(structure?: string): string {
+  switch (structure) {
+    case "row-major":
+      return "행 기준 구조";
+    case "column-major":
+      return "열 기준 구조";
+    case "mixed":
+      return "혼합 구조";
+    case "ambiguous":
+      return "판정 불확실";
+    default:
+      return "";
+  }
+}
+
 interface SourceInventoryPanelProps {
   tables: SourceTable[];
   relations: TableRelation[];
@@ -27,14 +42,14 @@ export function SourceInventoryPanel({ tables, relations }: SourceInventoryPanel
                   </span>
                   {table.structure && (
                     <span className="rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600 border border-slate-200">
-                      {table.structure}
+                      {formatStructureLabel(table.structure)}
                     </span>
                   )}
                 </div>
                 <p className="mt-1 text-[12.5px] text-gray-600 leading-relaxed">{table.context}</p>
                 {(table.rangeLabel || table.headerSummary) && (
                   <div className="mt-2 space-y-1">
-                    {table.rangeLabel && <div className="text-[11.5px] text-gray-500">범위 {table.rangeLabel}</div>}
+                    {table.rangeLabel && <div className="text-[11.5px] text-gray-500">범위: {table.rangeLabel}</div>}
                     {table.headerSummary && <div className="text-[11.5px] text-gray-500">{table.headerSummary}</div>}
                   </div>
                 )}
