@@ -859,7 +859,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
               <div>
                 <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Layout Plan</p>
                 <h3 className="mt-1 text-sm font-semibold text-gray-900">AI 레이아웃 시안</h3>
-                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">기본값인 HTML 모드에서는 layoutPlan JSON의 sections를 읽기 전용 HTML로 렌더링합니다. 이미지 모드는 기존 생성 경로를 그대로 사용합니다.</p>
+                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">기본값인 HTML 모드에서는 layoutPlan JSON의 제목·설명·sections를 읽기 전용 HTML로 렌더링합니다. 후보 카드 안에서는 드래그/리사이즈 편집 레이어를 노출하지 않고, 이미지 모드는 기존 생성 경로를 그대로 사용합니다.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="inline-flex items-center rounded-xl border border-gray-200/80 bg-gray-100/80 p-1 shadow-sm shadow-gray-100/80">
@@ -937,6 +937,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
                           analysisData={analysisData}
                           previewDataContext={previewDataContext}
                           compact
+                          editable={false}
                         />
                       ) : candidate.previewImageDataUrl ? (
                         <div className="overflow-hidden rounded-[18px] border border-gray-200 bg-white shadow-sm">
@@ -2630,10 +2631,10 @@ function LayoutHtmlPreview({
   const [activeInteraction, setActiveInteraction] = useState<ActiveLayoutInteraction | null>(null);
   const layoutTree = useMemo(() => resolveLayoutTree(plan), [plan]);
   const headerSection = plan.sections.find((section) => section.type === "header");
-  const editableHeaderTitleBlock = layoutTree.blocks[`${plan.id}-header-title`]?.type === "heading"
+  const editableHeaderTitleBlock = editable && layoutTree.blocks[`${plan.id}-header-title`]?.type === "heading"
     ? layoutTree.blocks[`${plan.id}-header-title`] as LayoutHeadingBlock
     : null;
-  const editableHeaderSummaryBlock = layoutTree.blocks[`${plan.id}-header-summary`]?.type === "text"
+  const editableHeaderSummaryBlock = editable && layoutTree.blocks[`${plan.id}-header-summary`]?.type === "text"
     ? layoutTree.blocks[`${plan.id}-header-summary`] as LayoutTextBlock
     : null;
   const canvasGroups = useMemo(
@@ -2642,9 +2643,9 @@ function LayoutHtmlPreview({
       .filter((block): block is LayoutGroupBlock => Boolean(block && block.type === "group" && block.region === "canvas" && !block.hidden)),
     [layoutTree]
   );
-  const title = editableHeaderTitleBlock?.content.text || headerSection?.title || plan.name || getAnalysisTitle(analysisData, "데이터 레이아웃");
+  const title = (editable ? editableHeaderTitleBlock?.content.text : undefined) || headerSection?.title || plan.name || getAnalysisTitle(analysisData, "데이터 레이아웃");
   const summaryText =
-    editableHeaderSummaryBlock?.content.text ||
+    (editable ? editableHeaderSummaryBlock?.content.text : undefined) ||
     plan.description ||
     getFindings(analysisData)[0]?.text ||
     getCautions(analysisData)[0]?.text ||
