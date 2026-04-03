@@ -23,9 +23,10 @@ import { GripVertical, RotateCcw } from "lucide-react";
 import { useAppStore } from "@/lib/app-store";
 import { getAnalysisTitle, getCautions, getFindings, getLegacyKeywordFallback, getSourceTables, getVisualizationPrompt } from "@/lib/analysis-selectors";
 import { buildInfographicContext, extractGeneratedImageResult } from "@/lib/infographic-generation";
-import { buildFallbackSectionLayouts, buildLayoutTreeFromPlan, projectLayoutPlanFromTree, reorderLayoutTreeRoots, updateLayoutTreeBlock } from "@/lib/layout-tree";
+import { buildLayoutTreeFromPlan, projectLayoutPlanFromTree, reorderLayoutTreeRoots, updateLayoutTreeBlock } from "@/lib/layout-tree";
 import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
 import { store } from "@/lib/store";
+import { buildLogicalTableIdAliasMap } from "@/lib/table-id-resolution";
 import type {
   AnalysisData,
   LayoutBlock,
@@ -51,6 +52,79 @@ const SECTION_TYPE_LABELS: Record<LayoutSectionType, string> = {
   takeaway: "결론",
   note: "노트",
 };
+
+type NormalizedSectionRole = "HOOK" | "EVIDENCE" | "CONTEXT" | "CONCLUSION";
+
+function normalizeSectionRole(role?: string | null): NormalizedSectionRole | undefined {
+  const normalized = role?.trim().toUpperCase();
+  if (normalized === "HOOK" || normalized === "EVIDENCE" || normalized === "CONTEXT" || normalized === "CONCLUSION") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function getSectionRolePresentation(role?: string | null) {
+  const normalized = normalizeSectionRole(role);
+  switch (normalized) {
+    case "HOOK":
+      return {
+        normalized,
+        label: "HOOK",
+        hint: "즉시 핵심을 전달하는 리드 섹션",
+        badgeClassName: "border-sky-200 bg-sky-50 text-sky-700",
+      };
+    case "EVIDENCE":
+      return {
+        normalized,
+        label: "EVIDENCE",
+        hint: "주장을 뒷받침하는 근거 섹션",
+        badgeClassName: "border-indigo-200 bg-indigo-50 text-indigo-700",
+      };
+    case "CONTEXT":
+      return {
+        normalized,
+        label: "CONTEXT",
+        hint: "배경과 맥락을 보강하는 섹션",
+        badgeClassName: "border-emerald-200 bg-emerald-50 text-emerald-700",
+      };
+    case "CONCLUSION":
+      return {
+        normalized,
+        label: "CONCLUSION",
+        hint: "요약과 제안을 마무리하는 섹션",
+        badgeClassName: "border-amber-200 bg-amber-50 text-amber-700",
+      };
+    default:
+      return undefined;
+  }
+}
+
+function getSectionDisplayTitle(section: LayoutSection): string {
+  return section.title || SECTION_TYPE_LABELS[section.type];
+}
+
+function getSectionTitlePlaceholder(section: LayoutSection): string {
+  const rolePresentation = getSectionRolePresentation(section.sectionRole);
+  return rolePresentation ? `${SECTION_TYPE_LABELS[section.type]} · ${rolePresentation.label}` : SECTION_TYPE_LABELS[section.type];
+}
+
+function getLayoutIntentPresentation(layoutIntent?: string | null) {
+  const normalized = layoutIntent?.trim();
+  return normalized ? `Intent · ${normalized}` : undefined;
+}
+
+function SectionRoleBadge({ role, compact = false }: { role?: string | null; compact?: boolean }) {
+  const presentation = getSectionRolePresentation(role);
+  if (!presentation) return null;
+  return (
+    <span
+      className={`rounded-full border px-2 py-1 font-semibold uppercase tracking-[0.12em] ${compact ? "text-[8px]" : "text-[9px]"} ${presentation.badgeClassName}`}
+      title={presentation.hint}
+    >
+      {presentation.label}
+    </span>
+  );
+}
 
 type PreviewMode = "html" | "image";
 type PreviewCanvasType = "bar" | "line" | "doughnut" | "pie";
@@ -78,6 +152,7 @@ interface PreviewDataContext {
 }
 
 interface PreviewDataRegistry {
+  emptyContext: PreviewDataContext;
   defaultContext: PreviewDataContext;
   contextsByTableId: Record<string, PreviewDataContext>;
 }
@@ -408,87 +483,17 @@ function isSameLayout(left: LayoutGeometry | undefined, right: LayoutGeometry): 
   return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height;
 }
 
-function ensureEditableLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | null {
-  const cloned = cloneLayoutPlan(layoutPlan);
-  if (!cloned) return null;
-
-  const previewContext = buildPreviewDataRegistry(undefined);
-  const defaultLayouts = buildFallbackSectionLayouts(cloned);
-  const defaultHeaderTitleLayout = { x: 0, y: 0, width: 58, height: 44 };
-  const defaultHeaderSummaryLayout = { x: 0, y: 50, width: 64, height: 24 };
-  const compactHeaderTitleLayout = { x: 0, y: 0, width: 70, height: 24 };
-  const compactHeaderSummaryLayout = { x: 0, y: 28, width: 78, height: 28 };
-  const legacyHeaderTitleLayout = { x: 0, y: 0, width: 72, height: 34 };
-  const legacyHeaderSummaryLayout = { x: 0, y: 40, width: 72, height: 44 };
-  cloned.headerTitleLayout = !cloned.headerTitleLayout || isSameLayout(cloned.headerTitleLayout, legacyHeaderTitleLayout) || isSameLayout(cloned.headerTitleLayout, compactHeaderTitleLayout)
-    ? defaultHeaderTitleLayout
-    : cloned.headerTitleLayout;
-  cloned.headerSummaryLayout = !cloned.headerSummaryLayout || isSameLayout(cloned.headerSummaryLayout, legacyHeaderSummaryLayout) || isSameLayout(cloned.headerSummaryLayout, compactHeaderSummaryLayout)
-    ? defaultHeaderSummaryLayout
-    : cloned.headerSummaryLayout;
-  cloned.headerTitleLayout = normalizeHeaderLayout(cloned.headerTitleLayout, defaultHeaderTitleLayout, MIN_HEADER_TITLE_WIDTH, MIN_HEADER_TITLE_HEIGHT);
-  cloned.headerSummaryLayout = normalizeHeaderLayout(cloned.headerSummaryLayout, defaultHeaderSummaryLayout, MIN_HEADER_SUMMARY_WIDTH, MIN_HEADER_SUMMARY_HEIGHT);
-  const normalizedSections = cloned.sections.map((rawSection) => {
-    const section = ensureSectionItems(rawSection, previewContext);
-    const chartLayouts = section.charts ? buildDefaultChartLayouts(section.charts.length, cloned.aspectRatio) : [];
-    const itemLayouts = section.items ? buildDefaultKpiLayouts(section.items.length) : [];
-    const defaultTitleLayout = section.type === "header" ? undefined : buildSectionTitleLayout(section);
-    const legacyTitleLayout = section.type === "header" ? undefined : buildLegacySectionTitleLayout(section);
-    const compactTitleLayout = section.type === "header" ? undefined : buildCompactSectionTitleLayout(section);
-    return {
-      ...section,
-      layout: section.type === "header"
-        ? section.layout
-        : section.layout ?? defaultLayouts.get(section.id),
-      titleLayout:
-        section.type === "header"
-          ? undefined
-          : !section.titleLayout || (legacyTitleLayout && isSameLayout(section.titleLayout, legacyTitleLayout)) || (compactTitleLayout && isSameLayout(section.titleLayout, compactTitleLayout))
-            ? defaultTitleLayout
-            : normalizeTitleLayout(section.titleLayout, defaultTitleLayout!),
-      noteLayout: section.noteLayout ?? (section.type === "takeaway" || section.type === "note" ? buildSectionNoteLayout() : undefined),
-      charts: section.charts?.map((chart, chartIndex) => ({
-        ...chart,
-        layout: chart.layout ?? chartLayouts[chartIndex],
-      })),
-      items: section.items?.map((item, itemIndex) => ({
-        ...item,
-        id: item.id || `${section.id}-item-${itemIndex + 1}`,
-        layout: item.layout ?? itemLayouts[itemIndex],
-      })),
-    };
-  });
-
-  const normalizedPlan: LayoutPlan = {
-    ...cloned,
-    sections: normalizedSections,
-  };
-
-  if (normalizedPlan.layoutTree && Object.keys(normalizedPlan.layoutTree.blocks).length > 0) {
-    return projectLayoutPlanFromTree({
-      ...normalizedPlan,
-      layoutTree: buildLayoutTreeFromPlan(normalizedPlan, normalizedPlan.layoutTree),
-    });
-  }
-
-  return {
-    ...normalizedPlan,
-    layoutTree: buildLayoutTreeFromPlan(normalizedPlan, normalizedPlan.layoutTree),
-  };
-}
-
 function buildFallbackLayoutPlans(analysisData: AnalysisData | null): LayoutPlan[] {
   if (!analysisData) return [];
 
   const title = getAnalysisTitle(analysisData, "데이터 요약");
-  const firstIssue = getCautions(analysisData)[0]?.text;
   const firstDimension = analysisData.tableData?.columns[0];
   const firstMetric = analysisData.tableData?.columns[1];
 
   return [
     {
       id: "layout-option-1",
-      name: "시안 1",
+      name: "시안",
       description: "메인 비교 차트를 가장 크게 배치한 기본 시안",
       layoutType: "dashboard",
       aspectRatio: "portrait",
@@ -500,7 +505,6 @@ function buildFallbackLayoutPlans(analysisData: AnalysisData | null): LayoutPlan
           title: "핵심 비교 차트",
           charts: [{ id: "bar-1", chartType: "bar", title: "핵심 비교", goal: "중요 지표 비교", dimension: firstDimension, metric: firstMetric }],
         },
-        { id: "takeaway", type: "takeaway", title: "요약 메모", note: firstIssue },
       ],
       visualPolicy: { textRatio: 0.15, chartRatio: 0.75, iconRatio: 0.1 },
     },
@@ -515,7 +519,7 @@ function resolveLayoutPlans(analysisData: AnalysisData | null): LayoutPlan[] {
       {
         ...primaryCandidate,
         id: primaryCandidate.id || "layout-option-1",
-        name: primaryCandidate.name || "시안 1",
+        name: primaryCandidate.name || "시안",
         description: primaryCandidate.description || "구성 전략이 반영된 대시보드 시안",
       },
     ];
@@ -527,7 +531,7 @@ function resolveLayoutPlans(analysisData: AnalysisData | null): LayoutPlan[] {
       {
         ...legacy,
         id: legacy.id || "layout-option-1",
-        name: legacy.name || "시안 1",
+        name: legacy.name || "시안",
         description: legacy.description || "기존 레이아웃 시안",
       },
     ];
@@ -573,11 +577,8 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
   const [activePreviewId, setActivePreviewId] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<PreviewMode>("html");
   const [previewRetryNonce, setPreviewRetryNonce] = useState(0);
-  const [editablePlan, setEditablePlan] = useState<LayoutPlan | null>(null);
-  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
-  const [editingField, setEditingField] = useState<EditableFieldState | null>(null);
   const attemptedPreviewSignaturesRef = useRef<Record<string, string>>({});
-  const previewDataContext = useMemo(() => buildPreviewDataRegistry(analysisData?.tableData), [analysisData?.tableData]);
+  const previewDataContext = useMemo(() => buildPreviewDataRegistry(analysisData), [analysisData]);
   const sourceTables = useMemo(() => getSourceTables(analysisData), [analysisData]);
 
   useEffect(() => {
@@ -585,17 +586,11 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
   }, [layoutSystemPrompt]);
 
   useEffect(() => {
-    const nextSelected = analysisData?.selectedSourceTableIds?.length
+    const nextSelected = Array.isArray(analysisData?.selectedSourceTableIds)
       ? analysisData.selectedSourceTableIds
       : sourceTables.map((table) => table.id);
     setSelectedSourceTableIds(nextSelected);
   }, [analysisData?.selectedSourceTableIds, sourceTables]);
-
-  useEffect(() => {
-    setEditablePlan(ensureEditableLayoutPlan(selectedPlan));
-    setSelectedElementId(null);
-    setEditingField(null);
-  }, [selectedPlan]);
 
   const persistAnalysisData = useCallback(
     async (nextAnalysisData: AnalysisData) => {
@@ -640,26 +635,11 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
     [analysisData, persistAnalysisData, sessionId]
   );
 
-  const persistEditedPlan = useCallback(
-    async (nextPlan: LayoutPlan) => {
-      const latestSession = sessionId ? await store.getSession(sessionId) : null;
-      const latestAnalysisData = latestSession?.analysisData ?? analysisData;
-      if (!latestAnalysisData) return;
-
-      const mergedCandidates = resolveLayoutPlans(latestAnalysisData).map((plan) =>
-        plan.id === nextPlan.id ? ensureEditableLayoutPlan(nextPlan) ?? nextPlan : plan
-      );
-
-      await persistAnalysisData(buildAnalysisWithLayoutCandidates(latestAnalysisData, mergedCandidates, nextPlan.id));
-    },
-    [analysisData, persistAnalysisData, sessionId]
-  );
-
   const toggleSourceTableSelection = useCallback(
     async (tableId: string) => {
       if (!analysisData) return;
 
-      const currentSelection = selectedSourceTableIds.length > 0 ? selectedSourceTableIds : sourceTables.map((table) => table.id);
+      const currentSelection = selectedSourceTableIds;
       const exists = currentSelection.includes(tableId);
       const nextSelection = exists
         ? currentSelection.filter((candidateId) => candidateId !== tableId)
@@ -676,24 +656,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
         visualizationBrief: undefined,
       });
     },
-    [analysisData, persistAnalysisData, selectedSourceTableIds, sourceTables]
-  );
-
-  const updateEditablePlan = useCallback(
-    (updater: (current: LayoutPlan) => LayoutPlan, options?: { persist?: boolean }) => {
-      const currentPlan = ensureEditableLayoutPlan(editablePlan ?? selectedPlan);
-      if (!currentPlan) return;
-
-      const updatedPlan = updater(currentPlan);
-      const nextPlan = ensureEditableLayoutPlan(updatedPlan);
-      if (!nextPlan) return;
-
-      setEditablePlan(nextPlan);
-      if (options?.persist) {
-        void persistEditedPlan(nextPlan);
-      }
-    },
-    [editablePlan, persistEditedPlan, selectedPlan]
+    [analysisData, persistAnalysisData, selectedSourceTableIds]
   );
 
   const selectCandidate = useCallback(
@@ -856,9 +819,9 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
             <textarea
               value={promptDraft}
               onChange={(event) => setPromptDraft(event.target.value)}
-              rows={8}
+              rows={3}
               placeholder="레이아웃 시안 생성 규칙을 입력하세요"
-              className="mt-4 min-h-[180px] w-full resize-y rounded-2xl border border-gray-200 bg-gray-50/70 px-4 py-3 text-[12.5px] leading-relaxed text-gray-700 outline-none transition-colors placeholder:text-gray-400 focus:border-blue-500 focus:bg-white"
+              className="mt-4 min-h-[96px] w-full resize-y rounded-2xl border border-gray-200 bg-gray-50/70 px-4 py-3 text-[12.5px] leading-relaxed text-gray-700 outline-none transition-colors placeholder:text-gray-400 focus:border-blue-500 focus:bg-white"
             />
 
             {sourceTables.length > 0 && (
@@ -868,11 +831,11 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
                     <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Source Tables</p>
                     <p className="mt-1 text-[12px] leading-relaxed text-gray-600">레이아웃에 사용할 표를 여러 개 선택하세요. 선택된 표를 조합해서 하나의 시안을 만듭니다.</p>
                   </div>
-                  <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[10.5px] font-medium text-gray-500">{selectedSourceTableIds.length || sourceTables.length}개 선택</span>
+                  <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[10.5px] font-medium text-gray-500">{selectedSourceTableIds.length}개 선택</span>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {sourceTables.map((table) => {
-                    const selected = (selectedSourceTableIds.length > 0 ? selectedSourceTableIds : sourceTables.map((item) => item.id)).includes(table.id);
+                    const selected = selectedSourceTableIds.includes(table.id);
                     return (
                       <button
                         key={table.id}
@@ -896,7 +859,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
               <div>
                 <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Layout Plan</p>
                 <h3 className="mt-1 text-sm font-semibold text-gray-900">AI 레이아웃 시안</h3>
-                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">기본값인 HTML 모드에서 layoutPlan과 표 데이터를 합쳐 실제 구조에 가까운 단일 시안을 확인할 수 있습니다. 이미지 모드는 기존 생성 경로를 그대로 사용합니다.</p>
+                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">기본값인 HTML 모드에서는 layoutPlan JSON의 sections를 읽기 전용 HTML로 렌더링합니다. 이미지 모드는 기존 생성 경로를 그대로 사용합니다.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="inline-flex items-center rounded-xl border border-gray-200/80 bg-gray-100/80 p-1 shadow-sm shadow-gray-100/80">
@@ -929,7 +892,6 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
               {candidates.map((candidate, index) => {
                 const isSelected = selectedPlan.id === candidate.id;
                 const isGeneratingPreview = activePreviewId === candidate.id && !candidate.previewImageDataUrl;
-                const previewPlan = isSelected ? editablePlan ?? ensureEditableLayoutPlan(candidate) ?? candidate : candidate;
                 return (
                   <div
                     key={candidate.id}
@@ -945,12 +907,22 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
                         <p className="text-[11px] font-semibold text-gray-500">안 {index + 1}</p>
                         <p className="mt-1 text-sm font-semibold text-gray-900">{candidate.name || `시안 ${index + 1}`}</p>
                       </div>
+                      {getLayoutIntentPresentation(candidate.layoutIntent) && (
+                        <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[10px] font-medium text-violet-700">
+                          {getLayoutIntentPresentation(candidate.layoutIntent)}
+                        </span>
+                      )}
                     </div>
                     <p className="mt-2 text-[12px] leading-relaxed text-gray-500">{candidate.description || "대시보드 시안"}</p>
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <div className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] font-medium text-gray-500">
                         {candidate.sections.filter((section) => section.type === "chart-group").length}개 차트 섹션
                       </div>
+                      {candidate.sections.some((section) => Boolean(getSectionRolePresentation(section.sectionRole))) && (
+                        <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-500">
+                          {candidate.sections.filter((section) => Boolean(getSectionRolePresentation(section.sectionRole))).length}개 role 태그
+                        </div>
+                      )}
                       {isGeneratingPreview && (
                         <div className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-medium text-blue-600">
                           이미지 미리보기 생성 중
@@ -961,25 +933,10 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
                     <div className="mt-4 overflow-hidden rounded-[24px] border border-gray-200 bg-[#f7f8fb] p-3 shadow-inner md:p-4">
                       {previewMode === "html" ? (
                         <LayoutHtmlPreview
-                          plan={previewPlan}
+                          plan={candidate}
                           analysisData={analysisData}
                           previewDataContext={previewDataContext}
                           compact
-                          editable={isSelected}
-                          selectedElementId={selectedElementId}
-                          editingField={editingField}
-                          onSelectElement={setSelectedElementId}
-                          onStartEditing={(id, value) => {
-                            setSelectedElementId(id);
-                            setEditingField({ id, value });
-                          }}
-                          onChangeEditingValue={(value) => setEditingField((current) => (current ? { ...current, value } : current))}
-                          onCancelEditing={() => setEditingField(null)}
-                          onCommitEditing={(id) => {
-                            if (editingField?.id !== id) return;
-                            setEditingField(null);
-                          }}
-                          onPlanChange={updateEditablePlan}
                         />
                       ) : candidate.previewImageDataUrl ? (
                         <div className="overflow-hidden rounded-[18px] border border-gray-200 bg-white shadow-sm">
@@ -1142,18 +1099,34 @@ function createPreviewDataContext(columns: string[], rows: string[][]): PreviewD
   };
 }
 
-function buildPreviewDataRegistry(tableData?: AnalysisData["tableData"]): PreviewDataRegistry {
+function buildPreviewDataRegistry(analysisData?: AnalysisData | null): PreviewDataRegistry {
   const emptyContext = { columns: [], rows: [], profiles: [], primaryMetricIndex: -1, primaryDimensionIndex: -1, secondaryDimensionIndex: -1 };
+  const tableData = analysisData?.tableData;
   if (!tableData) {
-    return { defaultContext: emptyContext, contextsByTableId: {} };
+    return { emptyContext, defaultContext: emptyContext, contextsByTableId: {} };
   }
 
   const defaultContext = createPreviewDataContext(tableData.columns, tableData.rows);
-  const contextsByTableId = Object.fromEntries(
-    (tableData.logicalTables ?? []).map((table) => [table.id, createPreviewDataContext(table.columns, table.rows)])
-  );
+  const aliases = buildLogicalTableIdAliasMap({
+    tableData,
+    sheetStructure: analysisData?.sheetStructure,
+    sourceTables: analysisData?.sourceInventory?.tables,
+  });
+  const contextsByTableId: Record<string, PreviewDataContext> = {};
 
-  return { defaultContext, contextsByTableId };
+  for (const table of tableData.logicalTables ?? []) {
+    const context = createPreviewDataContext(table.columns, table.rows);
+    contextsByTableId[table.id] = context;
+  }
+
+  for (const [inputId, logicalId] of aliases.entries()) {
+    const context = contextsByTableId[logicalId];
+    if (context) {
+      contextsByTableId[inputId] = context;
+    }
+  }
+
+  return { emptyContext, defaultContext, contextsByTableId };
 }
 
 function resolvePreviewDataContext(registry: PreviewDataRegistry, tableId?: string, sourceTableIds?: string[]): PreviewDataContext {
@@ -1164,6 +1137,10 @@ function resolvePreviewDataContext(registry: PreviewDataRegistry, tableId?: stri
   const firstSectionTableId = sourceTableIds?.find((candidate) => registry.contextsByTableId[candidate]);
   if (firstSectionTableId) {
     return registry.contextsByTableId[firstSectionTableId];
+  }
+
+  if (tableId || (sourceTableIds && sourceTableIds.length > 0)) {
+    return registry.emptyContext;
   }
 
   return registry.defaultContext;
@@ -1600,6 +1577,20 @@ function resolveGroupRoleLabel(role: LayoutGroupBlock["content"]["role"]): strin
   return role === "generic" ? "그룹" : SECTION_TYPE_LABELS[role];
 }
 
+function resolveSectionRoleTitle(plan: LayoutPlan, sectionId?: string, fallbackRole?: LayoutGroupBlock["content"]["role"]): string {
+  if (!sectionId) {
+    return fallbackRole ? resolveGroupRoleLabel(fallbackRole) : "그룹";
+  }
+
+  const section = plan.sections.find((candidate) => candidate.id === sectionId);
+  if (!section) {
+    return fallbackRole ? resolveGroupRoleLabel(fallbackRole) : "그룹";
+  }
+
+  const rolePresentation = getSectionRolePresentation(section.sectionRole);
+  return rolePresentation ? `${getSectionDisplayTitle(section)} · ${rolePresentation.label}` : getSectionDisplayTitle(section);
+}
+
 function resolveSectionSourceTableIds(plan: LayoutPlan, sectionId?: string): string[] | undefined {
   if (!sectionId) return undefined;
   return plan.sections.find((section) => section.id === sectionId)?.sourceTableIds;
@@ -1828,7 +1819,7 @@ function HtmlChartCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-[12px] font-semibold text-slate-900">{titleContent ?? chart.title}</div>
-          <div className="mt-1 text-[10.5px] leading-relaxed text-slate-500">{goalContent ?? chart.goal}</div>
+          {(goalContent ?? chart.goal) && <div className="mt-1 text-[10.5px] leading-relaxed text-slate-500">{goalContent ?? chart.goal}</div>}
         </div>
         <span className="rounded-full border border-slate-200 bg-slate-900 px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.14em] text-white">
           {chart.chartType === "stacked-bar" ? "stacked" : chart.chartType === "donut" ? "donut" : chart.chartType}
@@ -1849,11 +1840,6 @@ function HtmlChartCard({
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 text-[10px] text-slate-400">
-        <span>{preview.dimensionLabel}</span>
-        <span>{preview.metricLabel}</span>
-      </div>
-      <p className="mt-1 text-[10px] text-slate-500">{preview.infoNote}</p>
     </article>
   );
 }
@@ -2125,6 +2111,9 @@ function HtmlSectionPreview({
 
   const titleId = `${section.id}-title`;
   const noteId = `${section.id}-note`;
+  const displayTitle = getSectionDisplayTitle(section);
+  const titlePlaceholder = getSectionTitlePlaceholder(section);
+  const rolePresentation = getSectionRolePresentation(section.sectionRole);
   const handleCommitSectionTitle = (value: string) => {
     const trimmed = value.trim();
     onPlanChange?.((current) => updateSection(current, section.id, (target) => ({ ...target, title: trimmed || undefined })), { persist: true });
@@ -2148,8 +2137,8 @@ function HtmlSectionPreview({
             <div className="h-full rounded-[14px] bg-white/90 px-0.5 py-0">
               <EditableTextSlot
                 id={titleId}
-                value={section.title || SECTION_TYPE_LABELS[section.type]}
-                placeholder={SECTION_TYPE_LABELS[section.type]}
+                value={displayTitle}
+                placeholder={titlePlaceholder}
                 editable={editable}
                 selected={selectedElementId === titleId}
                 editingField={editingField}
@@ -2163,9 +2152,13 @@ function HtmlSectionPreview({
               />
             </div>
           </LayoutObjectFrame>
+          {rolePresentation && (
+            <div className="pointer-events-none absolute right-2 top-2">
+              <SectionRoleBadge role={section.sectionRole} compact />
+            </div>
+          )}
           {section.charts.map((chart) => {
             const chartTitleId = `${chart.id}-title`;
-            const chartGoalId = `${chart.id}-goal`;
             if (!chart.layout) return null;
             return (
               <LayoutObjectFrame
@@ -2174,7 +2167,7 @@ function HtmlSectionPreview({
                 label="차트 카드"
                 layout={chart.layout}
                 editable={editable}
-                selected={isSelectedLayoutElement(selectedElementId, `${chart.id}-card`, chartTitleId, chartGoalId)}
+                selected={isSelectedLayoutElement(selectedElementId, `${chart.id}-card`, chartTitleId)}
                 onSelect={onSelectElement}
                 onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) => onStartLayoutInteraction?.(type, event, origin, (current, nextLayout) => updateChartLayout(current, section.id, chart.id, nextLayout), resizeDirection, surfaceMetrics)}
               >
@@ -2204,28 +2197,6 @@ function HtmlSectionPreview({
                         }}
                       />
                     }
-                    goalContent={
-                      <EditableTextSlot
-                        id={chartGoalId}
-                        value={chart.goal}
-                        placeholder="차트 설명"
-                        editable={editable}
-                        multiline
-                        selected={selectedElementId === chartGoalId}
-                        editingField={editingField}
-                        displayClassName="w-full text-left"
-                        inputClassName="min-h-[64px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[10.5px] leading-relaxed text-slate-500 outline-none ring-2 ring-blue-100"
-                        onSelect={onSelectElement ?? (() => undefined)}
-                        onStartEditing={onStartEditing}
-                        onChange={onChangeEditingValue}
-                        onCancel={onCancelEditing}
-                        onCommit={(id, value) => {
-                          const trimmed = value.trim() || chart.goal;
-                          onPlanChange?.((current) => updateChart(current, section.id, chart.id, (target) => ({ ...target, goal: trimmed })), { persist: true });
-                          onCommitEditing?.(id, value);
-                        }}
-                      />
-                    }
                   />
                 </div>
               </LayoutObjectFrame>
@@ -2237,27 +2208,32 @@ function HtmlSectionPreview({
     return (
       <section className="space-y-2.5">
         <div className="flex items-center justify-between gap-2">
-          <EditableTextSlot
-            id={titleId}
-            value={section.title || SECTION_TYPE_LABELS[section.type]}
-            placeholder={SECTION_TYPE_LABELS[section.type]}
-            editable={editable}
-            selected={selectedElementId === titleId}
-            editingField={editingField}
-            displayClassName="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 text-left"
-            inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700 outline-none ring-2 ring-blue-100"
-            onSelect={onSelectElement ?? (() => undefined)}
-            onStartEditing={onStartEditing}
-            onChange={onChangeEditingValue}
-            onCancel={onCancelEditing}
-            onCommit={handleCommitSectionTitle}
-          />
-          <span className="rounded-full border border-slate-200 bg-white/80 px-2 py-1 text-[9px] font-medium text-slate-500">{section.charts.length} charts</span>
+          <div className="min-w-0 flex-1">
+            <EditableTextSlot
+              id={titleId}
+              value={displayTitle}
+              placeholder={titlePlaceholder}
+              editable={editable}
+              selected={selectedElementId === titleId}
+              editingField={editingField}
+              displayClassName="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 text-left"
+              inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700 outline-none ring-2 ring-blue-100"
+              onSelect={onSelectElement ?? (() => undefined)}
+              onStartEditing={onStartEditing}
+              onChange={onChangeEditingValue}
+              onCancel={onCancelEditing}
+              onCommit={handleCommitSectionTitle}
+            />
+            {rolePresentation && <p className="mt-1 text-[10px] text-slate-400">{rolePresentation.hint}</p>}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <SectionRoleBadge role={section.sectionRole} compact />
+            <span className="rounded-full border border-slate-200 bg-white/80 px-2 py-1 text-[9px] font-medium text-slate-500">{section.charts.length} charts</span>
+          </div>
         </div>
         <div className={`grid gap-2.5 ${gridClass}`}>
           {section.charts.map((chart) => {
             const chartTitleId = `${chart.id}-title`;
-            const chartGoalId = `${chart.id}-goal`;
             return (
               <HtmlChartCard
                 key={chart.id}
@@ -2281,28 +2257,6 @@ function HtmlSectionPreview({
                     onCommit={(id, value) => {
                       const trimmed = value.trim() || chart.title;
                       onPlanChange?.((current) => updateChart(current, section.id, chart.id, (target) => ({ ...target, title: trimmed })), { persist: true });
-                      onCommitEditing?.(id, value);
-                    }}
-                  />
-                }
-                goalContent={
-                  <EditableTextSlot
-                    id={chartGoalId}
-                    value={chart.goal}
-                    placeholder="차트 설명"
-                    editable={editable}
-                    multiline
-                    selected={selectedElementId === chartGoalId}
-                    editingField={editingField}
-                    displayClassName="w-full text-left"
-                    inputClassName="min-h-[64px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[10.5px] leading-relaxed text-slate-500 outline-none ring-2 ring-blue-100"
-                    onSelect={onSelectElement ?? (() => undefined)}
-                    onStartEditing={onStartEditing}
-                    onChange={onChangeEditingValue}
-                    onCancel={onCancelEditing}
-                    onCommit={(id, value) => {
-                      const trimmed = value.trim() || chart.goal;
-                      onPlanChange?.((current) => updateChart(current, section.id, chart.id, (target) => ({ ...target, goal: trimmed })), { persist: true });
                       onCommitEditing?.(id, value);
                     }}
                   />
@@ -2332,8 +2286,8 @@ function HtmlSectionPreview({
             <div className="h-full rounded-[14px] bg-white/90 px-0.5 py-0">
               <EditableTextSlot
                 id={titleId}
-                value={section.title || SECTION_TYPE_LABELS[section.type]}
-                placeholder={SECTION_TYPE_LABELS[section.type]}
+                value={displayTitle}
+                placeholder={titlePlaceholder}
                 editable={editable}
                 selected={selectedElementId === titleId}
                 editingField={editingField}
@@ -2347,6 +2301,11 @@ function HtmlSectionPreview({
               />
             </div>
           </LayoutObjectFrame>
+          {rolePresentation && (
+            <div className="pointer-events-none absolute right-2 top-2">
+              <SectionRoleBadge role={section.sectionRole} compact />
+            </div>
+          )}
           {kpis.map((item) => {
             const labelId = `${item.id}-label`;
             const valueId = `${item.id}-value`;
@@ -2419,22 +2378,28 @@ function HtmlSectionPreview({
     return (
       <section className="space-y-2.5">
         <div className="flex items-center justify-between gap-2">
-          <EditableTextSlot
-            id={titleId}
-            value={section.title || SECTION_TYPE_LABELS[section.type]}
-            placeholder={SECTION_TYPE_LABELS[section.type]}
-            editable={editable}
-            selected={selectedElementId === titleId}
-            editingField={editingField}
-            displayClassName="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 text-left"
-            inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700 outline-none ring-2 ring-blue-100"
-            onSelect={onSelectElement ?? (() => undefined)}
-            onStartEditing={onStartEditing}
-            onChange={onChangeEditingValue}
-            onCancel={onCancelEditing}
-            onCommit={handleCommitSectionTitle}
-          />
-          <span className="rounded-full border border-slate-200 bg-white/80 px-2 py-1 text-[9px] font-medium text-slate-500">{kpis.length} metrics</span>
+          <div className="min-w-0 flex-1">
+            <EditableTextSlot
+              id={titleId}
+              value={displayTitle}
+              placeholder={titlePlaceholder}
+              editable={editable}
+              selected={selectedElementId === titleId}
+              editingField={editingField}
+              displayClassName="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 text-left"
+              inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700 outline-none ring-2 ring-blue-100"
+              onSelect={onSelectElement ?? (() => undefined)}
+              onStartEditing={onStartEditing}
+              onChange={onChangeEditingValue}
+              onCancel={onCancelEditing}
+              onCommit={handleCommitSectionTitle}
+            />
+            {rolePresentation && <p className="mt-1 text-[10px] text-slate-400">{rolePresentation.hint}</p>}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <SectionRoleBadge role={section.sectionRole} compact />
+            <span className="rounded-full border border-slate-200 bg-white/80 px-2 py-1 text-[9px] font-medium text-slate-500">{kpis.length} metrics</span>
+          </div>
         </div>
         <div className="grid grid-cols-3 gap-2.5">
           {kpis.map((item) => {
@@ -2529,8 +2494,8 @@ function HtmlSectionPreview({
             <div className="h-full rounded-[14px] bg-white/90 px-0.5 py-0">
             <EditableTextSlot
               id={titleId}
-              value={section.title || SECTION_TYPE_LABELS[section.type]}
-              placeholder={SECTION_TYPE_LABELS[section.type]}
+              value={displayTitle}
+              placeholder={titlePlaceholder}
               editable={editable}
               selected={selectedElementId === titleId}
               editingField={editingField}
@@ -2544,6 +2509,11 @@ function HtmlSectionPreview({
             />
           </div>
         </LayoutObjectFrame>
+        {rolePresentation && (
+          <div className="pointer-events-none absolute right-2 top-2">
+            <SectionRoleBadge role={section.sectionRole} compact />
+          </div>
+        )}
         <LayoutObjectFrame
           id={noteId}
           label="설명 블록"
@@ -2579,22 +2549,28 @@ function HtmlSectionPreview({
       </section>
     ) : <section className="rounded-[18px] border border-slate-200/80 bg-white px-3 py-3 shadow-[0_12px_24px_rgba(15,23,42,0.05)]">
       <div className="flex items-center justify-between gap-2">
-        <EditableTextSlot
-          id={titleId}
-          value={section.title || SECTION_TYPE_LABELS[section.type]}
-          placeholder={SECTION_TYPE_LABELS[section.type]}
-          editable={editable}
-          selected={selectedElementId === titleId}
-          editingField={editingField}
-          displayClassName="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 text-left"
-          inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700 outline-none ring-2 ring-blue-100"
-          onSelect={onSelectElement ?? (() => undefined)}
-          onStartEditing={onStartEditing}
-          onChange={onChangeEditingValue}
-          onCancel={onCancelEditing}
-          onCommit={handleCommitSectionTitle}
-        />
-        <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[9px] font-medium text-slate-500">{SECTION_TYPE_LABELS[section.type]}</span>
+        <div className="min-w-0 flex-1">
+          <EditableTextSlot
+            id={titleId}
+            value={displayTitle}
+            placeholder={titlePlaceholder}
+            editable={editable}
+            selected={selectedElementId === titleId}
+            editingField={editingField}
+            displayClassName="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 text-left"
+            inputClassName="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-700 outline-none ring-2 ring-blue-100"
+            onSelect={onSelectElement ?? (() => undefined)}
+            onStartEditing={onStartEditing}
+            onChange={onChangeEditingValue}
+            onCancel={onCancelEditing}
+            onCommit={handleCommitSectionTitle}
+          />
+          {rolePresentation && <p className="mt-1 text-[10px] text-slate-400">{rolePresentation.hint}</p>}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <SectionRoleBadge role={section.sectionRole} compact />
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[9px] font-medium text-slate-500">{SECTION_TYPE_LABELS[section.type]}</span>
+        </div>
       </div>
       <EditableTextSlot
         id={noteId}
@@ -2801,7 +2777,10 @@ function LayoutHtmlPreview({
       }
 
       if (block.type === "heading") {
-        const placeholder = resolveGroupRoleLabel(groupBlock.content.role);
+        const placeholder = resolveSectionRoleTitle(plan, groupBlock.content.sectionId, groupBlock.content.role);
+        const normalizedSectionRole = getSectionRolePresentation(
+          plan.sections.find((section) => section.id === groupBlock.content.sectionId)?.sectionRole
+        );
         return (
           <LayoutObjectFrame
             key={block.id}
@@ -2830,11 +2809,12 @@ function LayoutHtmlPreview({
                 onChange={onChangeEditingValue}
                 onCancel={onCancelEditing}
                 onCommit={(id, value) => {
-                  const trimmed = value.trim() || placeholder;
+                  const trimmed = value.trim();
+                  const nextText = trimmed || block.content.text;
                   onPlanChange?.(
                     (current) => updateLayoutTreeBlock(current, block.id, (target) =>
                       target.type === "heading"
-                        ? { ...target, content: { ...target.content, text: trimmed } }
+                        ? { ...target, content: { ...target.content, text: nextText } }
                         : target
                     ),
                     { persist: true }
@@ -2842,6 +2822,11 @@ function LayoutHtmlPreview({
                   onCommitEditing?.(id, value);
                 }}
               />
+              {normalizedSectionRole && (
+                <div className="pointer-events-none absolute right-2 top-2">
+                  <SectionRoleBadge role={normalizedSectionRole.label} compact />
+                </div>
+              )}
             </div>
           </LayoutObjectFrame>
         );
@@ -2896,7 +2881,6 @@ function LayoutHtmlPreview({
       if (block.type === "chart") {
         const chart = buildChartSpecFromBlock(block);
         const chartTitleId = `${block.id}-title`;
-        const chartGoalId = `${block.id}-goal`;
         const sourceTableIds = resolveSectionSourceTableIds(plan, block.content.sectionId);
 
         return (
@@ -2906,7 +2890,7 @@ function LayoutHtmlPreview({
             label="차트 카드"
             layout={block.layout}
             editable={editable}
-            selected={isSelectedLayoutElement(selectedElementId, block.id, chartTitleId, chartGoalId)}
+            selected={isSelectedLayoutElement(selectedElementId, block.id, chartTitleId)}
             onSelect={onSelectElement}
             onStartInteraction={(type, event, origin, resizeDirection, surfaceMetrics) =>
               startTreeBlockInteraction(type, event, origin, block.id, resizeDirection, surfaceMetrics)
@@ -2937,35 +2921,6 @@ function LayoutHtmlPreview({
                         (current) => updateLayoutTreeBlock(current, block.id, (target) =>
                           target.type === "chart"
                             ? { ...target, content: { ...target.content, title: trimmed } }
-                            : target
-                        ),
-                        { persist: true }
-                      );
-                      onCommitEditing?.(id, value);
-                    }}
-                  />
-                }
-                goalContent={
-                  <EditableTextSlot
-                    id={chartGoalId}
-                    value={block.content.goal}
-                    placeholder="차트 설명"
-                    editable={editable}
-                    multiline
-                    selected={selectedElementId === chartGoalId}
-                    editingField={editingField}
-                    displayClassName="w-full text-left"
-                    inputClassName="min-h-[64px] w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-[10.5px] leading-relaxed text-slate-500 outline-none ring-2 ring-blue-100"
-                    onSelect={onSelectElement ?? (() => undefined)}
-                    onStartEditing={onStartEditing}
-                    onChange={onChangeEditingValue}
-                    onCancel={onCancelEditing}
-                    onCommit={(id, value) => {
-                      const trimmed = value.trim() || block.content.goal || "차트 설명";
-                      onPlanChange?.(
-                        (current) => updateLayoutTreeBlock(current, block.id, (target) =>
-                          target.type === "chart"
-                            ? { ...target, content: { ...target.content, goal: trimmed } }
                             : target
                         ),
                         { persist: true }
@@ -3221,11 +3176,12 @@ function LayoutHtmlPreview({
       </div>
       <div className={`bg-[radial-gradient(circle_at_top_left,rgba(226,232,240,0.7),transparent_32%),linear-gradient(180deg,#f8fafc_0%,#ffffff_100%)] ${compact ? "p-3" : "p-4"}`} style={{ aspectRatio: PREVIEW_ASPECT_RATIOS[plan.aspectRatio] }}>
         <div ref={canvasRef} className={`relative h-full rounded-[18px] ${editable ? "overflow-visible border border-dashed border-slate-200/80 bg-white/45" : "overflow-hidden"}`}>
-          {editable ? (
+              {editable ? (
             canvasGroups.map((groupBlock) => {
               const isDraggingSection = activeInteraction?.type === "section-reorder" && activeInteraction.groupBlockId === groupBlock.id;
               const isSelectedSection = isSelectedLayoutElement(selectedElementId, groupBlock.id);
-              const sectionTitle = plan.sections.find((section) => section.id === groupBlock.content.sectionId)?.title || resolveGroupRoleLabel(groupBlock.content.role);
+              const sourceSection = plan.sections.find((section) => section.id === groupBlock.content.sectionId);
+              const sectionTitle = resolveSectionRoleTitle(plan, groupBlock.content.sectionId, groupBlock.content.role);
               return (
                 <div
                   key={groupBlock.id}
@@ -3253,6 +3209,11 @@ function LayoutHtmlPreview({
                       });
                     }}
                   />
+                  {getSectionRolePresentation(sourceSection?.sectionRole) && (
+                    <div className="pointer-events-none absolute right-3 top-3 z-10">
+                      <SectionRoleBadge role={sourceSection?.sectionRole} compact />
+                    </div>
+                  )}
                   <div className="relative h-full overflow-auto rounded-[18px] bg-white/88 p-3 custom-scrollbar">
                     {groupBlock.childIds.map((childId) => {
                       const childBlock = layoutTree.blocks[childId];
@@ -3285,11 +3246,15 @@ function LayoutHtmlPreview({
 function VisualDraftBoard({ plan, analysisData, compact = false }: { plan: LayoutPlan; analysisData: AnalysisData | null; compact?: boolean }) {
   const title = getAnalysisTitle(analysisData, plan.sections.find((section) => section.type === "header")?.title || "인포그래픽 시안");
   const summaryText = getFindings(analysisData)[0]?.text || getLegacyKeywordFallback(analysisData).slice(0, 3).join(" · ") || "핵심 비교 포인트가 먼저 보이는 구조";
+  const layoutIntent = getLayoutIntentPresentation(plan.layoutIntent);
 
   return (
     <div className={`rounded-[18px] bg-white shadow-sm ${compact ? "px-4 py-4" : "px-5 py-5"}`}>
       <div className={`border-b border-gray-200 ${compact ? "pb-3" : "pb-4"}`}>
-        <p className="text-[11px] font-medium text-gray-500">레이아웃 시안</p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[11px] font-medium text-gray-500">레이아웃 시안</p>
+          {layoutIntent && <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-1 text-[9px] font-medium text-violet-700">{layoutIntent}</span>}
+        </div>
         <h2 className={`mt-1 font-bold tracking-[-0.04em] text-gray-900 ${compact ? "text-[21px] leading-[1.15]" : "text-[25px]"}`}>{title}</h2>
         <p className={`mt-2 text-gray-500 ${compact ? "text-[11px] leading-relaxed" : "text-[12px]"}`}>{summaryText}</p>
       </div>
@@ -3307,14 +3272,22 @@ function DraftSectionCard({ section, index, compact = false }: { section: Layout
   if (section.type === "header") return null;
   const isComparisonSection = section.title?.includes("비교") || section.title?.includes("핵심");
   const isRepeatedSection = section.title?.includes("주요 섹션") || section.title?.includes("반복");
+  const displayTitle = getSectionDisplayTitle(section);
+  const rolePresentation = getSectionRolePresentation(section.sectionRole);
 
   return (
     <section className={compact ? "space-y-2.5" : "space-y-3"}>
       <div className={`flex items-center justify-between rounded-sm bg-[#456fbe] text-white ${compact ? "px-3 py-2" : "px-4 py-2"}`}>
-        <span className="text-[11px] font-semibold tracking-[0.01em]">
-          {index + 1}. {section.title || SECTION_TYPE_LABELS[section.type]}
-        </span>
-        <span className="text-[10px] font-medium opacity-80">Base: 전체</span>
+        <div>
+          <span className="text-[11px] font-semibold tracking-[0.01em]">
+            {index + 1}. {displayTitle}
+          </span>
+          {rolePresentation && <p className="mt-1 text-[10px] font-medium opacity-80">{rolePresentation.hint}</p>}
+        </div>
+        <div className="flex items-center gap-2">
+          {rolePresentation && <SectionRoleBadge role={section.sectionRole} compact />}
+          <span className="text-[10px] font-medium opacity-80">Base: 전체</span>
+        </div>
       </div>
 
       {section.type === "chart-group" && section.charts && section.charts.length > 0 ? (
@@ -3465,7 +3438,10 @@ function DraftSectionCard({ section, index, compact = false }: { section: Layout
         </div>
       ) : (
         <div className={`rounded-[14px] border border-gray-200 bg-white ${compact ? "px-3 py-3" : "px-4 py-4"}`}>
-          <p className="text-[13px] font-semibold text-gray-800">{section.title || SECTION_TYPE_LABELS[section.type]}</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[13px] font-semibold text-gray-800">{displayTitle}</p>
+            <SectionRoleBadge role={section.sectionRole} compact />
+          </div>
           {section.note && <p className="mt-2 text-[12px] leading-relaxed text-gray-500">{section.note}</p>}
         </div>
       )}

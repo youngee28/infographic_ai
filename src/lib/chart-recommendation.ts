@@ -305,7 +305,7 @@ export function buildChartRecommendationsForLogicalTables(
     }));
   }
 
-  const allowedTableIds = selectedTableIds?.length ? new Set(selectedTableIds) : null;
+  const allowedTableIds = selectedTableIds === undefined ? null : new Set(selectedTableIds);
   return logicalTables
     .filter((table) => !allowedTableIds || allowedTableIds.has(table.id))
     .flatMap((table) =>

@@ -264,6 +264,7 @@ export interface LayoutKpiItem {
 export interface LayoutSection {
   id: string;
   type: LayoutSectionType;
+  sectionRole?: string;
   sourceTableIds?: string[];
   title?: string;
   layout?: LayoutGeometry;
@@ -283,6 +284,7 @@ export interface LayoutVisualPolicy {
 export interface LayoutPlan {
   id: string;
   layoutType: "dashboard";
+  layoutIntent?: string;
   aspectRatio: LayoutAspectRatio;
   name?: string;
   description?: string;

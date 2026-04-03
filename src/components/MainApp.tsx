@@ -6,16 +6,15 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useAppStore } from "@/lib/app-store";
 import { normalizeAnalysisData } from "@/lib/analysis-schema";
 import { mergeTableInterpretations, validateSheetStructure } from "@/lib/analysis-pipeline";
-import {
-  buildChartRecommendationsForLogicalTables,
-  rerankLayoutPlansByRecommendations,
-} from "@/lib/chart-recommendation";
+import { buildChartRecommendationsForLogicalTables, rerankLayoutPlansByRecommendations } from "@/lib/chart-recommendation";
 import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
+import { buildLogicalTableIdAliasMap, resolveLogicalTableId, resolveLogicalTableIds } from "@/lib/table-id-resolution";
 import { store, type TableSession } from "@/lib/store";
 import type {
   AnalysisData,
   AnalysisSheetStructure,
   AnalysisStructuredTable,
+  ChartRecommendation,
   LayoutAspectRatio,
   LayoutChartType,
   LayoutGeometry,
@@ -23,6 +22,7 @@ import type {
   LayoutSectionType,
   RawSheetGrid,
   ReferenceLine,
+  SourceTable,
   SummaryVariant,
   TableInterpretationResult,
 } from "@/lib/session-types";
@@ -109,6 +109,23 @@ function normalizeNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+interface LayoutTableBrief {
+  tableId: string;
+  name: string;
+  role: SourceTable["role"];
+  structure: AnalysisStructuredTable["structure"];
+  headerSummary?: string;
+  rangeLabel?: string;
+  dimensions: string[];
+  metrics: string[];
+  chartHint?: {
+    chartType: ChartRecommendation["chartType"];
+    dimension?: string;
+    metric?: string;
+    goal: string;
+  };
+}
+
 function isLayoutAspectRatio(value: unknown): value is LayoutAspectRatio {
   return typeof value === "string" && LAYOUT_ASPECT_RATIOS.includes(value as LayoutAspectRatio);
 }
@@ -153,6 +170,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
     name?: unknown;
     description?: unknown;
     layoutType?: unknown;
+    layoutIntent?: unknown;
     aspectRatio?: unknown;
     headerTitleLayout?: unknown;
     headerSummaryLayout?: unknown;
@@ -172,6 +190,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
         const sectionCandidate = section as {
           id?: unknown;
           type?: unknown;
+          sectionRole?: unknown;
           sourceTableIds?: unknown;
           title?: unknown;
           layout?: unknown;
@@ -268,6 +287,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
           {
             id: normalizeNonEmptyString(sectionCandidate.id) ?? `section-${index + 1}`,
             type,
+            sectionRole: normalizeNonEmptyString(sectionCandidate.sectionRole),
             sourceTableIds: Array.isArray(sectionCandidate.sourceTableIds)
               ? sectionCandidate.sourceTableIds.flatMap((tableId) => (typeof tableId === "string" && tableId.trim() ? [tableId.trim()] : []))
               : undefined,
@@ -310,6 +330,7 @@ function normalizeLayoutPlan(value: unknown, fallbackId?: string): LayoutPlan | 
   return {
     id: normalizeNonEmptyString((candidate as { id?: unknown }).id) ?? fallbackId ?? "layout-option",
     layoutType,
+    layoutIntent: normalizeNonEmptyString(candidate.layoutIntent),
     aspectRatio,
     name: normalizeNonEmptyString((candidate as { name?: unknown }).name),
     description: normalizeNonEmptyString((candidate as { description?: unknown }).description),
@@ -479,16 +500,24 @@ function serializeFallbackGridFromTableData(tableData: TableData): string {
   });
 }
 
-function getSelectedSourceTableIds(tableData: TableData, existing?: string[]): string[] {
-  if (existing && existing.length > 0) {
-    const existingSet = new Set(existing);
-    const knownIds = new Set((tableData.logicalTables ?? []).map((table) => table.id));
-    const filtered = existing.filter((tableId) => knownIds.size === 0 || knownIds.has(tableId));
-    if (filtered.length > 0) {
-      return Array.from(new Set(filtered));
+function getSelectedSourceTableIds(
+  tableData: TableData,
+  existing?: string[],
+  sheetStructure?: AnalysisSheetStructure,
+  sourceTables?: SourceTable[]
+): string[] {
+  const aliases = buildLogicalTableIdAliasMap({ tableData, sheetStructure, sourceTables });
+
+  if (existing) {
+    const resolved = resolveLogicalTableIds(existing, aliases);
+    if (resolved.length > 0) {
+      return resolved;
     }
-    if (existingSet.size > 0 && knownIds.size === 0) {
-      return Array.from(existingSet);
+    if (existing.length > 0 && (tableData.logicalTables ?? []).length === 0) {
+      return Array.from(new Set(existing));
+    }
+    if (existing.length > 0) {
+      return [];
     }
   }
 
@@ -497,6 +526,50 @@ function getSelectedSourceTableIds(tableData: TableData, existing?: string[]): s
   }
 
   return [tableData.primaryLogicalTableId ?? "table-1"];
+}
+
+function canonicalizeNarrativeItems(items: AnalysisData["findings"], aliases: Map<string, string>) {
+  return (items ?? []).map((item) => ({
+    ...item,
+    sourceTableIds: resolveLogicalTableIds(item.sourceTableIds, aliases),
+    evidence: item.evidence.map((entry) => ({
+      ...entry,
+      tableId: resolveLogicalTableId(entry.tableId, aliases) ?? entry.tableId,
+    })),
+  }));
+}
+
+function canonicalizeInterpretationResults(
+  results: TableInterpretationResult[],
+  aliases: Map<string, string>
+): TableInterpretationResult[] {
+  return results.map((result) => ({
+    ...result,
+    tableId: resolveLogicalTableId(result.tableId, aliases) ?? result.tableId,
+    findings: canonicalizeNarrativeItems(result.findings, aliases),
+    implications: canonicalizeNarrativeItems(result.implications, aliases),
+    cautions: canonicalizeNarrativeItems(result.cautions, aliases),
+  }));
+}
+
+function canonicalizeLayoutPlans(layoutPlans: LayoutPlan[] | undefined, aliases: Map<string, string>): LayoutPlan[] | undefined {
+  return layoutPlans?.map((plan) => ({
+    ...plan,
+    sections: plan.sections.map((section) => ({
+      ...section,
+      sourceTableIds: section.sourceTableIds
+        ? resolveLogicalTableIds(section.sourceTableIds, aliases)
+        : section.sourceTableIds,
+      charts: section.charts?.map((chart) => ({
+        ...chart,
+        tableId: resolveLogicalTableId(chart.tableId, aliases) ?? chart.tableId,
+      })),
+      items: section.items?.map((item) => ({
+        ...item,
+        tableId: resolveLogicalTableId(item.tableId, aliases) ?? item.tableId,
+      })),
+    })),
+  }));
 }
 
 async function callGeminiJson<T>(apiKey: string, model: string, prompt: string): Promise<T> {
@@ -600,6 +673,128 @@ ${JSON.stringify(table, null, 2)}
 ${slicedGridText}`.trim();
 }
 
+function formatHeaderSummary(table: AnalysisStructuredTable): string | undefined {
+  const axis = table.header.axis;
+  if (axis === "mixed") {
+    const headerRows = table.header.headerRows?.join(", ") || "-";
+    const headerCols = table.header.headerCols?.join(", ") || "-";
+    return `상단 ${headerRows}행 + 좌측 ${headerCols}열 헤더`;
+  }
+  if (axis === "row") {
+    return `상단 ${table.header.headerRows?.join(", ") || "-"}행 헤더`;
+  }
+  if (axis === "column") {
+    return `좌측 ${table.header.headerCols?.join(", ") || "-"}열 헤더`;
+  }
+  return undefined;
+}
+
+function formatRangeLabel(table: AnalysisStructuredTable): string {
+  return `R${table.range.startRow}-R${table.range.endRow} / C${table.range.startCol}-C${table.range.endCol}`;
+}
+
+function getBestChartHintForTable(params: {
+  chartRecommendations?: AnalysisData["chartRecommendations"];
+  tableId: string;
+  aliases: Map<string, string>;
+  tableData?: TableData;
+}): LayoutTableBrief["chartHint"] {
+  const matchingRecommendations = (params.chartRecommendations ?? [])
+    .flatMap((recommendation) => {
+      const resolvedTableId = resolveLogicalTableId(recommendation.tableId, params.aliases) ?? recommendation.tableId;
+      if (resolvedTableId !== params.tableId) return [];
+      return [{ ...recommendation, tableId: resolvedTableId }];
+    })
+    .sort((left, right) => right.score - left.score || left.chartType.localeCompare(right.chartType));
+
+  const bestRecommendation = matchingRecommendations[0];
+  if (bestRecommendation) {
+    return {
+      chartType: bestRecommendation.chartType,
+      dimension: bestRecommendation.dimension,
+      metric: bestRecommendation.metric,
+      goal: bestRecommendation.reason,
+    };
+  }
+
+  if (params.tableData) {
+    const regenerated = buildChartRecommendationsForLogicalTables(params.tableData, [params.tableId])
+      .filter((recommendation) => recommendation.tableId === params.tableId)
+      .sort((left, right) => right.score - left.score || left.chartType.localeCompare(right.chartType))[0];
+    if (regenerated) {
+      return {
+        chartType: regenerated.chartType,
+        dimension: regenerated.dimension,
+        metric: regenerated.metric,
+        goal: regenerated.reason,
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function buildLayoutTableBriefs(params: {
+  sheetStructure: AnalysisSheetStructure;
+  selectedSourceTableIds: string[];
+  sourceTables?: SourceTable[];
+  interpretationResults: TableInterpretationResult[];
+  chartRecommendations?: AnalysisData["chartRecommendations"];
+  tableData?: TableData;
+}): LayoutTableBrief[] {
+  const aliases = buildLogicalTableIdAliasMap({
+    tableData: params.tableData,
+    sheetStructure: params.sheetStructure,
+    sourceTables: params.sourceTables,
+  });
+  const sourceTableById = new Map(
+    (params.sourceTables ?? []).map((table) => [resolveLogicalTableId(table.id, aliases) ?? table.id, table])
+  );
+  const selectedIdSet = new Set(params.selectedSourceTableIds);
+
+  return params.sheetStructure.tables
+    .flatMap((table) => {
+      const resolvedTableId = resolveLogicalTableId(table.id, aliases) ?? table.id;
+      if (selectedIdSet.size > 0 && !selectedIdSet.has(resolvedTableId)) return [];
+
+      const sourceTable = sourceTableById.get(resolvedTableId);
+      return [{
+        tableId: resolvedTableId,
+        name: sourceTable?.name || table.title,
+        role: sourceTable?.role ?? (params.selectedSourceTableIds[0] === resolvedTableId ? "primary" : "supporting"),
+        structure: table.structure,
+        headerSummary: formatHeaderSummary(table),
+        rangeLabel: formatRangeLabel(table),
+        dimensions: table.dimensions,
+        metrics: table.metrics,
+        chartHint: getBestChartHintForTable({
+          chartRecommendations: params.chartRecommendations,
+          tableId: resolvedTableId,
+          aliases,
+          tableData: params.tableData,
+        }),
+      } satisfies LayoutTableBrief];
+    })
+    .filter(
+      (brief) =>
+        brief.dimensions.length > 0 ||
+        brief.metrics.length > 0 ||
+        brief.chartHint
+    );
+}
+
+function hasReadyLayoutBriefInputs(params: {
+  status?: AnalysisData["status"];
+  sheetStructure?: AnalysisSheetStructure;
+  reviewReasons?: string[];
+  tableInterpretations?: TableInterpretationResult[];
+}) {
+  if (params.status !== "complete") return false;
+  if (!params.sheetStructure || params.sheetStructure.tables.length === 0) return false;
+  if (params.sheetStructure.needsReview || (params.reviewReasons?.length ?? 0) > 0) return false;
+  return (params.tableInterpretations?.length ?? 0) === params.sheetStructure.tables.length;
+}
+
 async function runStructureAnalysis(apiKey: string, model: string, rawGridText: string) {
   return callGeminiJson<{ schemaVersion?: string; sheetStructure?: AnalysisSheetStructure }>(apiKey, model, buildStructurePrompt(rawGridText));
 }
@@ -617,42 +812,68 @@ async function runTableInterpretation(
 function buildComposeLayoutPrompt(params: {
   title: string;
   sheetStructure: AnalysisSheetStructure;
-  selectedTables: AnalysisStructuredTable[];
-  interpretationResults: TableInterpretationResult[];
-  chartRecommendations: AnalysisData["chartRecommendations"];
+  layoutTableBriefs: LayoutTableBrief[];
   layoutPromptInstruction: string;
 }) {
-  const { title, sheetStructure, selectedTables, interpretationResults, chartRecommendations, layoutPromptInstruction } = params;
-  return `당신은 데이터 인포그래픽 레이아웃 설계 전문가입니다.
+  const { title, sheetStructure, layoutTableBriefs, layoutPromptInstruction } = params;
+  return `## Role
+당신은 데이터 스토리텔링 기반 인포그래픽 레이아웃 설계자입니다.
 
-중요:
-- 선택된 여러 표를 하나의 dashboard 레이아웃으로 조합하세요.
-- 레이아웃은 반드시 1개만 제안하세요.
-- header를 제외한 본문 섹션은 3~4개 이내로 제한하고, 첫 본문 섹션은 가장 중요한 메시지를 담는 hero chart-group으로 구성하세요.
-- 각 chart는 어느 표를 쓰는지 tableId를 반드시 넣으세요.
-- 각 section은 관련 sourceTableIds를 넣으세요.
-- 시안답게 보이도록 섹션마다 역할이 분명해야 합니다. 예: hero 비교 차트 → 보조 KPI/보조 차트 → takeaway/note.
+## [Hard Constraints] 반드시 지켜야 합니다
+- 레이아웃은 반드시 1개만 반환하세요.
+- 선택된 모든 tableId를 최소 1회 이상 레이아웃에 반영하세요.
+- layoutType은 반드시 "dashboard"만 사용하세요.
+- section.type은 반드시 "header" | "chart-group" 중에서만 선택하세요.
+- chart.chartType은 반드시 "bar" | "line" | "donut" | "pie" | "stacked-bar" | "map" 중에서만 선택하세요.
+- aspectRatio는 반드시 "portrait" | "square" | "landscape" 중에서만 선택하세요.
+- 각 chart에는 가능한 한 tableId를 넣고, 각 section에는 관련 sourceTableIds를 넣으세요.
+- dimensions 또는 metrics가 비어 있으면 임의로 축 이름을 추정하지 말고, 구조가 불명확한 표로 취급하세요.
+- KPI 카드, takeaway, note, 요약 메모, 핵심 시사점 박스는 만들지 마세요.
+- 설명 문단보다 차트와 범례 중심으로 구성하세요.
 - section.title, chart.title, plan.name, description은 데이터 의미가 드러나는 구체적인 문장으로 쓰고, "섹션 1", "차트 1", "시안 1" 같은 generic 라벨은 피하세요.
-- 상단은 표1, 중간은 표2, 하단은 표3처럼 수직 배치해도 되고, 좌우 분할도 가능합니다.
-- 여러 표가 선택되었으면 최소 2개 이상의 서로 다른 tableId를 레이아웃에 반영하세요.
-- chart/group/KPI/takeaway/note는 선택된 표들의 서사를 연결하는 방식으로 배치하세요.
-- geometry를 확신할 때만 기존 스키마의 layout 필드를 채우세요. section에는 layout/titleLayout/noteLayout, chart와 item에는 layout을 넣을 수 있습니다. 좌표는 0~100 퍼센트 기준입니다.
+- JSON만 반환하고, 마크다운 코드블록이나 설명 문장은 포함하지 마세요.
 
-반드시 JSON만 반환하세요.
+## [Design Basis] 아래 구조와 차트 힌트를 설계의 출발점으로 삼으세요
+선택된 표들의 관계는 차트 배치와 제목으로만 드러내고, 별도 요약 박스는 만들지 마세요.
 
-반환 형식:
+[TITLE]
+${title}
+
+[SHEET_STRUCTURE]
+${JSON.stringify(sheetStructure, null, 2)}
+
+[TABLE_BRIEFS]
+${JSON.stringify(layoutTableBriefs, null, 2)}
+
+## [Soft Guidance] 데이터에 따라 조정 가능한 가이드라인입니다
+- header를 제외한 본문 섹션 수는 2~5개를 기본 범위로 생각하되, 데이터 복잡도에 따라 조정하세요.
+- 첫 본문 섹션이 반드시 hero chart-group일 필요는 없지만, 가장 강한 메시지를 가장 먼저 전달하세요.
+- 섹션 순서는 차트 비교 흐름이 자연스럽게 읽히도록 구성하세요.
+- 상단/중단/하단 수직 배치와 좌우 분할 중, 데이터 비교와 읽기 흐름에 더 맞는 구성을 선택하세요.
+- geometry를 확신할 때만 layout/titleLayout/noteLayout 필드를 채우세요. 좌표는 0~100 퍼센트 기준입니다.
+
+## [Metadata] 향후 렌더러가 사용할 의미 힌트를 선택적으로 추가할 수 있습니다
+- 각 section에는 선택적으로 sectionRole을 넣을 수 있습니다.
+- sectionRole 예시: "HOOK", "EVIDENCE", "CONTEXT", "CONCLUSION"
+- 각 plan에는 선택적으로 layoutIntent를 넣을 수 있습니다.
+- layoutIntent 예시: "comparison", "timeline", "distribution", "ranking", "summary"
+- sectionRole과 layoutIntent는 설명용 metadata일 뿐, 새로운 enum이나 구조를 만들면 안 됩니다.
+
+## [Output Schema]
 {
   "layoutPlans": [
     {
       "id": "layout-option-1",
-      "name": "시안 1",
+      "name": "시안",
       "description": "선택된 여러 표를 연결한 통합 대시보드",
       "layoutType": "dashboard",
+      "layoutIntent": "comparison",
       "aspectRatio": "portrait",
       "sections": [
         {
           "id": "section-1",
           "type": "chart-group",
+          "sectionRole": "HOOK",
           "title": "섹션 제목",
           "sourceTableIds": ["table-1", "table-2"],
           "charts": [
@@ -674,23 +895,9 @@ function buildComposeLayoutPrompt(params: {
   "infographicPrompt": "선택된 여러 표를 함께 설명하는 한국어 인포그래픽 프롬프트"
 }
 
-[LAYOUT_SYSTEM_PROMPT]
+## [Layout System Prompt]
 ${layoutPromptInstruction}
-
-[SHEET_STRUCTURE]
-${JSON.stringify(sheetStructure, null, 2)}
-
-[SELECTED_TABLES]
-${JSON.stringify(selectedTables, null, 2)}
-
-[TABLE_INTERPRETATIONS]
-${JSON.stringify(interpretationResults, null, 2)}
-
-[CHART_RECOMMENDATIONS]
-${JSON.stringify(chartRecommendations ?? [], null, 2)}
-
-[TITLE]
-${title}`.trim();
+`.trim();
 }
 
 async function runComposedLayoutGeneration(
@@ -699,9 +906,8 @@ async function runComposedLayoutGeneration(
   params: {
     title: string;
     sheetStructure: AnalysisSheetStructure;
-    selectedTables: AnalysisStructuredTable[];
-    interpretationResults: TableInterpretationResult[];
-    chartRecommendations: AnalysisData["chartRecommendations"];
+    layoutTableBriefs: LayoutTableBrief[];
+    chartRecommendations?: AnalysisData["chartRecommendations"];
     layoutPromptInstruction: string;
   }
 ) {
@@ -1130,9 +1336,26 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
 
     try {
       const currentTableData = baseAnalysis.tableData;
-      const selectedSourceTableIds = getSelectedSourceTableIds(currentTableData, baseAnalysis.selectedSourceTableIds);
+      const initialTableIdAliases = buildLogicalTableIdAliasMap({
+        tableData: currentTableData,
+        sheetStructure: baseAnalysis.sheetStructure,
+        sourceTables: baseAnalysis.sourceInventory?.tables,
+      });
+      const hadExplicitSelection = Array.isArray(baseAnalysis.selectedSourceTableIds);
+      const selectedSourceTableIds = getSelectedSourceTableIds(
+        currentTableData,
+        baseAnalysis.selectedSourceTableIds,
+        baseAnalysis.sheetStructure,
+        baseAnalysis.sourceInventory?.tables
+      );
       const chartRecommendations = baseAnalysis.chartRecommendations?.length
-        ? baseAnalysis.chartRecommendations.filter((item) => !item.tableId || selectedSourceTableIds.includes(item.tableId))
+        ? baseAnalysis.chartRecommendations.flatMap((item) => {
+            const resolvedTableId = item.tableId ? (resolveLogicalTableId(item.tableId, initialTableIdAliases) ?? item.tableId) : undefined;
+            if (resolvedTableId && !selectedSourceTableIds.includes(resolvedTableId)) {
+              return [];
+            }
+            return [{ ...item, tableId: resolvedTableId }];
+          })
         : buildChartRecommendationsForLogicalTables(currentTableData, selectedSourceTableIds);
       const useEditedTableSource = options?.analysisSource === "edited-table";
       const rawGrid = useEditedTableSource
@@ -1234,9 +1457,16 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
         return;
       }
 
-      const interpretationResults = await Promise.all(
+      const tableIdAliases = buildLogicalTableIdAliasMap({
+        tableData: currentTableData,
+        sheetStructure,
+        sourceTables: baseAnalysis.sourceInventory?.tables,
+      });
+
+      const interpretationResults = canonicalizeInterpretationResults(await Promise.all(
         sheetStructure.tables.map((table) => {
-          const matchingLogicalTable = currentTableData.logicalTables?.find((candidate) => candidate.id === table.id);
+          const logicalTableId = resolveLogicalTableId(table.id, tableIdAliases) ?? table.id;
+          const matchingLogicalTable = currentTableData.logicalTables?.find((candidate) => candidate.id === logicalTableId);
           const slicedText = matchingLogicalTable
             ? formatSlicedGrid([matchingLogicalTable.columns, ...matchingLogicalTable.rows], {
                 originalRange: table.range,
@@ -1246,25 +1476,43 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
               : formatSlicedGrid([currentTableData.columns, ...currentTableData.rows], { originalRange: table.range });
           return runTableInterpretation(apiKey, selectedLayoutModel, sheetStructure, table, slicedText);
         })
-      );
+      ), tableIdAliases);
 
       const merged = mergeTableInterpretations({ sheetStructure }, interpretationResults);
       const layoutPromptInstruction = options?.layoutPromptOverride?.trim() || layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
-      const selectedTables = sheetStructure.tables.filter((table) => selectedSourceTableIds.includes(table.id));
       const selectedInterpretations = interpretationResults.filter((result) => selectedSourceTableIds.includes(result.tableId));
+      const effectiveInterpretations = selectedInterpretations.length > 0 || !hadExplicitSelection ? (selectedInterpretations.length > 0 ? selectedInterpretations : interpretationResults) : [];
+      const layoutTableBriefs = buildLayoutTableBriefs({
+        sheetStructure,
+        selectedSourceTableIds,
+        sourceTables: baseAnalysis.sourceInventory?.tables,
+        interpretationResults: effectiveInterpretations,
+        chartRecommendations,
+        tableData: currentTableData,
+      });
+      if (layoutTableBriefs.length === 0 || !hasReadyLayoutBriefInputs({
+        status: "complete",
+        sheetStructure,
+        reviewReasons: synthesizedReviewReasons,
+        tableInterpretations: interpretationResults,
+      })) {
+        throw new Error("Layout brief inputs are not ready.");
+      }
       const composedLayout = await runComposedLayoutGeneration(apiKey, selectedLayoutModel, {
         title: baseAnalysis.title || getDatasetTitle(session.fileName),
         sheetStructure,
-        selectedTables: selectedTables.length > 0 ? selectedTables : sheetStructure.tables,
-        interpretationResults: selectedInterpretations.length > 0 ? selectedInterpretations : interpretationResults,
+        layoutTableBriefs,
         chartRecommendations,
         layoutPromptInstruction,
       });
       const normalizedLayoutPlans = rerankLayoutPlansByRecommendations(
-        normalizeLayoutPlans(composedLayout.layoutPlans) ??
-          merged.generatedLayoutPlans ??
-          baseAnalysis.generatedLayoutPlans ??
-          (baseAnalysis.generatedLayoutPlan ? [baseAnalysis.generatedLayoutPlan] : baseAnalysis.layoutPlan ? [baseAnalysis.layoutPlan] : undefined),
+        canonicalizeLayoutPlans(
+          normalizeLayoutPlans(composedLayout.layoutPlans) ??
+            merged.generatedLayoutPlans ??
+            baseAnalysis.generatedLayoutPlans ??
+            (baseAnalysis.generatedLayoutPlan ? [baseAnalysis.generatedLayoutPlan] : baseAnalysis.layoutPlan ? [baseAnalysis.layoutPlan] : undefined),
+          tableIdAliases
+        ),
         chartRecommendations
       );
       const selectedLayoutPlan = getSelectedLayoutPlan(
@@ -1325,16 +1573,24 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     if (!session) return;
 
     const { session: hydratedSession, analysis } = await hydrateSessionAnalysis(session);
-    const nextAnalysis = selectedSourceTableIds?.length
+    const resolvedSelectedSourceTableIds = analysis.tableData
+      ? getSelectedSourceTableIds(
+          analysis.tableData,
+          selectedSourceTableIds,
+          analysis.sheetStructure,
+          analysis.sourceInventory?.tables
+        )
+      : selectedSourceTableIds;
+    const nextAnalysis = resolvedSelectedSourceTableIds && selectedSourceTableIds
       ? normalizeAnalysisData(
           {
             ...analysis,
-            selectedSourceTableIds,
+            selectedSourceTableIds: resolvedSelectedSourceTableIds,
             visualizationBrief: undefined,
             generatedInfographicPrompt: undefined,
             infographicPrompt: undefined,
             chartRecommendations: analysis.tableData
-              ? buildChartRecommendationsForLogicalTables(analysis.tableData, selectedSourceTableIds)
+              ? buildChartRecommendationsForLogicalTables(analysis.tableData, resolvedSelectedSourceTableIds)
               : analysis.chartRecommendations,
           },
           analysis.title || getDatasetTitle(hydratedSession.fileName)
@@ -1419,13 +1675,23 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
             sourceInventory: buildSourceInventory(session.fileName, nextTableData),
             tableData: nextTableData,
             tableContext: buildTableContext(nextTableData),
-            selectedSourceTableIds: getSelectedSourceTableIds(nextTableData, session.analysisData.selectedSourceTableIds),
+            selectedSourceTableIds: getSelectedSourceTableIds(
+              nextTableData,
+              session.analysisData.selectedSourceTableIds,
+              session.analysisData.sheetStructure,
+              session.analysisData.sourceInventory?.tables
+            ),
             visualizationBrief: undefined,
             generatedInfographicPrompt: undefined,
             infographicPrompt: undefined,
             chartRecommendations: buildChartRecommendationsForLogicalTables(
               nextTableData,
-              getSelectedSourceTableIds(nextTableData, session.analysisData.selectedSourceTableIds)
+              getSelectedSourceTableIds(
+                nextTableData,
+                session.analysisData.selectedSourceTableIds,
+                session.analysisData.sheetStructure,
+                session.analysisData.sourceInventory?.tables
+              )
             ),
             status: "pending",
           },

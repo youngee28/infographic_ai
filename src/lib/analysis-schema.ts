@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { buildLogicalTableIdAliasMap, resolveLogicalTableIds } from "@/lib/table-id-resolution";
 import type { AnalysisData } from "@/lib/session-types";
 
 export const chartRecommendationSchema = z.object({
@@ -249,6 +250,7 @@ export const layoutKpiItemSchema = z.object({
 export const layoutSectionSchema = z.object({
   id: z.string().trim().min(1),
   type: z.enum(["header", "chart-group", "kpi-group", "takeaway", "note"]),
+  sectionRole: z.string().trim().optional(),
   sourceTableIds: z.array(z.string().trim().min(1)).optional(),
   title: z.string().trim().optional(),
   layout: layoutGeometrySchema.optional(),
@@ -268,6 +270,7 @@ export const layoutVisualPolicySchema = z.object({
 export const layoutPlanSchema = z.object({
   id: z.string().trim().min(1),
   layoutType: z.literal("dashboard"),
+  layoutIntent: z.string().trim().optional(),
   aspectRatio: z.enum(["portrait", "square", "landscape"]),
   name: z.string().trim().optional(),
   description: z.string().trim().optional(),
@@ -297,6 +300,7 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
     description?: unknown;
     previewImageDataUrl?: unknown;
     layoutType?: unknown;
+    layoutIntent?: unknown;
     aspectRatio?: unknown;
     layoutTree?: unknown;
     headerTitleLayout?: unknown;
@@ -336,6 +340,8 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
         const next = section as {
           id?: unknown;
           type?: unknown;
+          sectionRole?: unknown;
+          sourceTableIds?: unknown;
           title?: unknown;
           layout?: unknown;
           titleLayout?: unknown;
@@ -361,6 +367,7 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
               if (!chart || typeof chart !== "object") return [];
               const chartCandidate = chart as {
                 id?: unknown;
+                tableId?: unknown;
                 chartType?: unknown;
                 title?: unknown;
                 goal?: unknown;
@@ -384,6 +391,7 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
               const chartType: "bar" | "line" | "donut" | "pie" | "stacked-bar" | "map" = chartCandidate.chartType;
               return [{
                 id: typeof chartCandidate.id === "string" && chartCandidate.id.trim() ? chartCandidate.id.trim() : `chart-${sectionIndex + 1}-${chartIndex + 1}`,
+                tableId: typeof chartCandidate.tableId === "string" && chartCandidate.tableId.trim() ? chartCandidate.tableId.trim() : undefined,
                 chartType,
                 title,
                 goal,
@@ -402,6 +410,7 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
                 const chartType: "bar" | "line" | "donut" | "pie" | "stacked-bar" | "map" = next.chartType;
                 return [{
                 id: typeof next.chartId === "string" && next.chartId.trim() ? next.chartId.trim() : `chart-${sectionIndex + 1}-1`,
+                tableId: undefined,
                 chartType,
                 title: next.title.trim(),
                 goal: next.goal.trim(),
@@ -417,12 +426,13 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
         const items = Array.isArray(next.items)
           ? next.items.flatMap((item, itemIndex) => {
               if (!item || typeof item !== "object") return [];
-              const itemCandidate = item as { id?: unknown; label?: unknown; value?: unknown; layout?: unknown };
+              const itemCandidate = item as { id?: unknown; tableId?: unknown; label?: unknown; value?: unknown; layout?: unknown };
               const label = typeof itemCandidate.label === "string" ? itemCandidate.label.trim() : "";
               const value = typeof itemCandidate.value === "string" ? itemCandidate.value.trim() : "";
               return label && value
                 ? [{
                     id: typeof itemCandidate.id === "string" && itemCandidate.id.trim() ? itemCandidate.id.trim() : `item-${sectionIndex + 1}-${itemIndex + 1}`,
+                    tableId: typeof itemCandidate.tableId === "string" && itemCandidate.tableId.trim() ? itemCandidate.tableId.trim() : undefined,
                     label,
                     value,
                     layout: normalizeGeometry(itemCandidate.layout),
@@ -434,6 +444,13 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
         return [{
           id: typeof next.id === "string" && next.id.trim() ? next.id.trim() : `section-${sectionIndex + 1}`,
           type: rawType,
+          sectionRole: typeof next.sectionRole === "string" && next.sectionRole.trim() ? next.sectionRole.trim() : undefined,
+          sourceTableIds: Array.isArray(next.sourceTableIds)
+            ? next.sourceTableIds
+                .filter((tableId): tableId is string => typeof tableId === "string")
+                .map((tableId) => tableId.trim())
+                .filter(Boolean)
+            : undefined,
           title: typeof next.title === "string" && next.title.trim() ? next.title.trim() : undefined,
           layout,
           titleLayout: normalizeGeometry(next.titleLayout),
@@ -456,6 +473,7 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
   return {
     id: typeof candidate.id === "string" && candidate.id.trim() ? candidate.id.trim() : fallbackId,
     layoutType: "dashboard",
+    layoutIntent: typeof candidate.layoutIntent === "string" && candidate.layoutIntent.trim() ? candidate.layoutIntent.trim() : undefined,
     aspectRatio,
     name: typeof candidate.name === "string" && candidate.name.trim() ? candidate.name.trim() : undefined,
     description: typeof candidate.description === "string" && candidate.description.trim() ? candidate.description.trim() : undefined,
@@ -849,6 +867,12 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
     const rawTableContext = typeof raw?.tableContext === "string" ? raw.tableContext : "";
     const rawStatus = raw?.status === "pending" || raw?.status === "complete" ? raw.status : undefined;
     const hasContent = Boolean(rawTitle || rawTableContext || rawTableData?.success);
+    const fallbackGeneratedLayoutPlans = normalizeLegacyLayoutPlans(raw?.generatedLayoutPlans);
+    const fallbackGeneratedLayoutPlan = normalizeLegacyLayoutPlan(raw?.generatedLayoutPlan);
+    const fallbackLayoutPlan = normalizeLegacyLayoutPlan(raw?.layoutPlan);
+    const fallbackSelectedLayoutPlanId = typeof raw?.selectedLayoutPlanId === "string" && raw.selectedLayoutPlanId.trim().length > 0
+      ? raw.selectedLayoutPlanId.trim()
+      : undefined;
     const fallbackTableCount = rawSheetStructure?.success
       ? rawSheetStructure.data.tableCount
       : rawTableData?.success
@@ -933,12 +957,14 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       keywords: [],
       insights: "",
       issues: "",
-      selectedSourceTableIds: undefined,
+      selectedSourceTableIds: raw?.selectedSourceTableIds && Array.isArray(raw.selectedSourceTableIds)
+        ? raw.selectedSourceTableIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        : undefined,
       chartRecommendations: undefined,
-      generatedLayoutPlans: undefined,
-      selectedLayoutPlanId: undefined,
-      generatedLayoutPlan: undefined,
-      layoutPlan: undefined,
+      generatedLayoutPlans: fallbackGeneratedLayoutPlans,
+      selectedLayoutPlanId: fallbackSelectedLayoutPlanId,
+      generatedLayoutPlan: fallbackGeneratedLayoutPlan,
+      layoutPlan: fallbackLayoutPlan,
       generatedInfographicPrompt: "",
       infographicPrompt: "",
       tableContext: rawTableContext,
@@ -957,6 +983,14 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
   }
 
   const data = parsed.data;
+  const tableIdAliases = buildLogicalTableIdAliasMap({
+    tableData: data.tableData,
+    sheetStructure: data.sheetStructure,
+    sourceTables: data.sourceInventory?.tables,
+  });
+  const canonicalSelectedSourceTableIds = data.selectedSourceTableIds?.length
+    ? resolveLogicalTableIds(data.selectedSourceTableIds, tableIdAliases)
+    : [];
   const title = data.dataset?.title?.trim() || data.title?.trim() || fallbackTitle;
   const sourceInventory = deriveSourceInventory(data, title);
   const findings = deriveNarrativeItems(data.findings, data.summaries[0]);
@@ -1036,7 +1070,11 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
     keywords: deriveKeywords(data, sourceInventory),
     insights: askNext.join("\n"),
     issues: normalizedIssues,
-    selectedSourceTableIds: data.selectedSourceTableIds?.length ? compactUnique(data.selectedSourceTableIds) : undefined,
+    selectedSourceTableIds: canonicalSelectedSourceTableIds.length > 0
+      ? canonicalSelectedSourceTableIds
+      : data.selectedSourceTableIds?.length
+        ? compactUnique(data.selectedSourceTableIds)
+        : undefined,
     chartRecommendations: data.chartRecommendations,
     generatedLayoutPlans: data.generatedLayoutPlans,
     selectedLayoutPlanId: data.selectedLayoutPlanId,

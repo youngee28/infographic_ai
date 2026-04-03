@@ -1,4 +1,5 @@
 import { buildChartRecommendations, buildChartRecommendationsForLogicalTables } from "@/lib/chart-recommendation";
+import { buildLogicalTableIdAliasMap, resolveLogicalTableId } from "@/lib/table-id-resolution";
 import type {
   AnalysisData,
   NarrativeItem,
@@ -300,12 +301,22 @@ function toDisplaySafeTableContext(context?: string | null): string {
 }
 
 function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
+  const aliases = buildLogicalTableIdAliasMap({
+    tableData: analysisData?.tableData,
+    sheetStructure: analysisData?.sheetStructure,
+    sourceTables: analysisData?.sourceInventory?.tables,
+  });
+
   if (analysisData?.sheetStructure?.tables?.length) {
-    const primaryTableId = analysisData?.visualizationBrief?.primaryTableId ?? analysisData.sheetStructure.tables[0]?.id;
-    return analysisData.sheetStructure.tables.map((table) => ({
-      id: table.id,
+    const primaryTableId = resolveLogicalTableId(analysisData?.visualizationBrief?.primaryTableId, aliases)
+      ?? resolveLogicalTableId(analysisData.sheetStructure.tables[0]?.id, aliases)
+      ?? analysisData.sheetStructure.tables[0]?.id;
+    const tables = analysisData.sheetStructure.tables.map((table) => {
+      const resolvedId = resolveLogicalTableId(table.id, aliases) ?? table.id;
+      return {
+        id: resolvedId,
       name: table.title,
-      role: table.id === primaryTableId ? "primary" : table.structure === "column-major" ? "reference" : "supporting",
+        role: resolvedId === primaryTableId ? "primary" as const : table.structure === "column-major" ? "reference" as const : "supporting" as const,
       purpose:
         table.structure === "mixed"
           ? "행과 열 헤더가 혼합된 표 구조 파악"
@@ -318,11 +329,13 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
       dimensions: table.dimensions,
       metrics: table.metrics,
       grain: table.structure,
-      keyTakeaway: table.id === primaryTableId ? analysisData?.summaries[0]?.lines?.[0]?.text : undefined,
+        keyTakeaway: resolvedId === primaryTableId ? analysisData?.summaries[0]?.lines?.[0]?.text : undefined,
       structure: table.structure,
       rangeLabel: formatRangeLabel(table.range.startRow, table.range.endRow, table.range.startCol, table.range.endCol),
       headerSummary: formatHeaderSummary(table.header.axis, table.header.headerRows, table.header.headerCols),
-    }));
+      };
+    });
+    return Array.from(new Map(tables.map((table) => [table.id, table])).values());
   }
 
   if (analysisData?.sourceInventory?.tables && analysisData.sourceInventory.tables.length > 0) {
