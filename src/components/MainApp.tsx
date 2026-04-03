@@ -385,16 +385,16 @@ function getSelectedLayoutPlan(
   return fallbackPlan;
 }
 
-function buildSourceInventory(fileName: string, tableData: TableData, tableContext: string) {
+function buildSourceInventory(fileName: string, tableData: TableData) {
   if (tableData.logicalTables && tableData.logicalTables.length > 0) {
     const primaryLogicalTableId = tableData.primaryLogicalTableId ?? tableData.logicalTables[0]?.id;
     return {
-      tables: tableData.logicalTables.map((table, index) => ({
+      tables: tableData.logicalTables.map((table) => ({
         id: table.id,
         name: table.name,
         role: table.id === primaryLogicalTableId ? "primary" as const : table.orientation === "column-major" ? "reference" as const : "supporting" as const,
         purpose: table.orientation === "column-major" ? "열 기준 항목 구조를 파악합니다." : "행 기준 레코드 구조를 파악합니다.",
-        context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열에서 감지한 논리 표입니다.${table.id === primaryLogicalTableId ? ` ${tableContext}` : ""}`.trim(),
+        context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열에서 감지한 논리 표입니다.`,
         dimensions: table.columns.slice(0, 2),
         metrics: table.columns.slice(2),
         grain: table.orientation,
@@ -410,7 +410,7 @@ function buildSourceInventory(fileName: string, tableData: TableData, tableConte
         name: tableData.sheetName?.trim() || getDatasetTitle(fileName),
         role: "primary" as const,
         purpose: "업로드된 표의 핵심 구조와 수치를 파악합니다.",
-        context: tableContext,
+        context: `전체 표 ${tableData.rowCount}행 × ${tableData.columnCount}열 구조를 해석하기 위한 기본 표입니다.`,
         dimensions: tableData.columns.slice(0, 2),
         metrics: tableData.columns.slice(2),
         grain: tableData.sheetName ? "sheet" : undefined,
@@ -722,7 +722,7 @@ function createPendingAnalysis(fileName: string, tableData: TableData): Analysis
         sourceType: tableData.sourceType,
       },
       sheetStructure: buildInitialSheetStructure(fileName, tableData),
-      sourceInventory: buildSourceInventory(fileName, tableData, tableContext),
+      sourceInventory: buildSourceInventory(fileName, tableData),
       findings: [],
       implications: [],
       cautions: [],
@@ -838,6 +838,9 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
     cautions: source.cautions ?? pending.cautions,
     askNext: source.askNext ?? pending.askNext,
     visualizationBrief: source.visualizationBrief ?? pending.visualizationBrief,
+    chartRecommendations: source.chartRecommendations && source.chartRecommendations.length > 0
+      ? source.chartRecommendations
+      : pending.chartRecommendations,
     title: source.title?.trim() || pending.title,
     generatedLayoutPlans:
       source.generatedLayoutPlans ??
@@ -848,7 +851,7 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
     layoutPlan: source.layoutPlan ?? source.generatedLayoutPlan,
     generatedInfographicPrompt:
       source.generatedInfographicPrompt?.trim() || source.infographicPrompt?.trim() || pending.generatedInfographicPrompt,
-    tableContext: pending.tableContext,
+    tableContext: source.tableContext?.trim() || pending.tableContext,
     status: source.status ?? "pending",
   }, source.title?.trim() || pending.title || getDatasetTitle(fileName));
 }
@@ -1327,6 +1330,9 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
           {
             ...analysis,
             selectedSourceTableIds,
+            visualizationBrief: undefined,
+            generatedInfographicPrompt: undefined,
+            infographicPrompt: undefined,
             chartRecommendations: analysis.tableData
               ? buildChartRecommendationsForLogicalTables(analysis.tableData, selectedSourceTableIds)
               : analysis.chartRecommendations,
@@ -1410,10 +1416,13 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
                   sourceType: nextTableData.sourceType,
                 }
               : undefined,
-            sourceInventory: buildSourceInventory(session.fileName, nextTableData, buildTableContext(nextTableData)),
+            sourceInventory: buildSourceInventory(session.fileName, nextTableData),
             tableData: nextTableData,
             tableContext: buildTableContext(nextTableData),
             selectedSourceTableIds: getSelectedSourceTableIds(nextTableData, session.analysisData.selectedSourceTableIds),
+            visualizationBrief: undefined,
+            generatedInfographicPrompt: undefined,
+            infographicPrompt: undefined,
             chartRecommendations: buildChartRecommendationsForLogicalTables(
               nextTableData,
               getSelectedSourceTableIds(nextTableData, session.analysisData.selectedSourceTableIds)

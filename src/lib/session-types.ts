@@ -333,6 +333,13 @@ export interface TableInsightContextCard {
   }>;
 }
 
+export interface TableChartRecommendationCaptionItem {
+  tableId: string;
+  tableTitle: string;
+  recommendedChart: string;
+  rationale: string;
+}
+
 export interface AnalysisData {
   schemaVersion?: "1" | "2" | "3";
   title?: string;

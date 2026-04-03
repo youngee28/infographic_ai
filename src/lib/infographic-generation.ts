@@ -42,6 +42,11 @@ export function buildInfographicContext(analysisData?: AnalysisData | null, prom
   if (!analysisData) return "";
 
   const tables = getSourceTables(analysisData);
+  const selectedSourceTableIds = analysisData.selectedSourceTableIds ?? [];
+  const effectiveTables = selectedSourceTableIds.length > 0
+    ? tables.filter((table) => selectedSourceTableIds.includes(table.id))
+    : tables;
+  const scopedTables = effectiveTables.length > 0 ? effectiveTables : tables;
   const findings = getFindings(analysisData).map((item) => item.text);
   const implications = getImplications(analysisData).map((item) => item.text);
   const cautions = getCautions(analysisData).map((item) => item.text);
@@ -73,7 +78,7 @@ export function buildInfographicContext(analysisData?: AnalysisData | null, prom
   return [
     getAnalysisTitle(analysisData) ? `데이터셋 제목: ${getAnalysisTitle(analysisData)}` : "",
     analysisData.dataset?.summary ? `데이터셋 요약: ${analysisData.dataset.summary}` : "",
-    tables.length > 0 ? `표 구성: ${tables.map((table) => `${table.name}(${table.role})`).join(" | ")}` : "",
+    scopedTables.length > 0 ? `표 구성: ${scopedTables.map((table) => `${table.name}(${table.role})`).join(" | ")}` : "",
     layoutPlanContext ? `확정된 레이아웃 계획:\n${layoutPlanContext}` : "",
     findings.length > 0 ? `핵심 신호: ${findings.slice(0, 6).join(" | ")}` : "",
     implications.length > 0 ? `실무 시사점: ${implications.slice(0, 4).join(" | ")}` : "",

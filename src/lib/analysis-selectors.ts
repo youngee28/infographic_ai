@@ -1,9 +1,11 @@
+import { buildChartRecommendations, buildChartRecommendationsForLogicalTables } from "@/lib/chart-recommendation";
 import type {
   AnalysisData,
   NarrativeItem,
   ReferenceLine,
   SourceTable,
-    SummaryVariant,
+  SummaryVariant,
+  TableChartRecommendationCaptionItem,
   TableInsightContextCard,
   TableRelation,
   VisualizationBrief,
@@ -53,6 +55,47 @@ function compactUnique(values: Array<string | undefined | null>): string[] {
   return result;
 }
 
+function formatChartTypeLabel(chartType: string): string {
+  switch (chartType) {
+    case "bar":
+      return "막대 차트";
+    case "line":
+      return "라인 차트";
+    case "donut":
+      return "도넛 차트";
+    case "pie":
+      return "파이 차트";
+    case "stacked-bar":
+      return "누적 막대 차트";
+    case "map":
+      return "지도 차트";
+    default:
+      return chartType;
+  }
+}
+
+function formatChartRecommendationReason(reason: string): string {
+  if (reason === "time_series") {
+    return "시간 흐름에 따른 추세 변화를 비교하기에 적합합니다.";
+  }
+  if (reason === "category_compare") {
+    return "범주별 수치 차이를 한눈에 비교하기에 적합합니다.";
+  }
+  if (reason === "part_to_whole") {
+    return "전체 대비 각 항목의 구성 비중을 보여주기에 적합합니다.";
+  }
+  if (reason === "geo_compare") {
+    return "지역별 분포와 차이를 직관적으로 보여주기에 적합합니다.";
+  }
+  if (reason.startsWith("split_by_")) {
+    const splitKey = reason.slice("split_by_".length).trim();
+    return splitKey
+      ? `${splitKey} 기준으로 세부 구성을 나눠 비교하기에 적합합니다.`
+      : "세부 구성을 나눠 비교하기에 적합합니다.";
+  }
+  return reason;
+}
+
 function parseLegacyQuestions(insights?: string): string[] {
   if (!insights?.trim()) return [];
   const raw = insights.trim();
@@ -66,20 +109,6 @@ function parseLegacyQuestions(insights?: string): string[] {
     }
   }
   return compactUnique(raw.split(/\n+|\s+(?=\d+[.)]\s*)|[;|]/)).slice(0, 3);
-}
-
-function getSectionLines(text: string, sectionName: string): string[] {
-  const marker = `[${sectionName}]`;
-  const startIndex = text.indexOf(marker);
-  if (startIndex < 0) return [];
-  const remainder = text.slice(startIndex + marker.length);
-  const nextSectionIndex = remainder.search(/\n\[[A-Z_]+\]/);
-  const sectionBody = nextSectionIndex >= 0 ? remainder.slice(0, nextSectionIndex) : remainder;
-  return sectionBody
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => line.startsWith("- "));
 }
 
 function linesToNarrative(lines?: ReferenceLine[]): NarrativeItem[] {
@@ -110,6 +139,166 @@ function narrativeToTexts(items?: NarrativeItem[]): string[] {
   return compactUnique(items.map((item) => item.text));
 }
 
+function stripListPrefix(value: string): string {
+  return value.replace(/^[-•]\s*/, "").trim();
+}
+
+function getSectionLines(context: string, sectionName: string): string[] {
+  const escapedSectionName = sectionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`\\[${escapedSectionName}\\]\\n([\\s\\S]*?)(?=\\n\\[[A-Z_]+\\]|$)`);
+  const match = context.match(pattern);
+  if (!match?.[1]) return [];
+
+  return match[1]
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function hasStructuredTableContext(context?: string | null): boolean {
+  return Boolean(context && /\[(DATASET_META|LOGICAL_TABLES|COLUMN_PROFILES|FIELD_ROLES|CHART_HINTS|DATA_QUALITY|ROW_SAMPLES)\]/.test(context));
+}
+
+function summarizeFieldRoleLine(line: string): string {
+  const normalized = stripListPrefix(line);
+  const [label, rawValue] = normalized.split(":", 2);
+  if (!rawValue) return normalized;
+
+  const entries = rawValue.split("/").map((entry) => entry.trim()).filter(Boolean);
+  if (entries.length <= 2) return `${label.trim()}: ${entries.join(" / ")}`;
+  return `${label.trim()}: ${entries.slice(0, 2).join(" / ")} 외 ${entries.length - 2}개`;
+}
+
+function getStructuredTableContextSummaryLines(context: string): string[] {
+  const metaLines = getSectionLines(context, "DATASET_META")
+    .map(stripListPrefix)
+    .filter((line) => !line.startsWith("형식:") && !line.startsWith("열 이름:"));
+  const roleLines = getSectionLines(context, "FIELD_ROLES")
+    .slice(0, 2)
+    .map(summarizeFieldRoleLine);
+  const qualityLines = getSectionLines(context, "DATA_QUALITY")
+    .map(stripListPrefix)
+    .filter((line) => !line.startsWith("정규화 노트:"))
+    .slice(0, 1);
+
+  return compactUnique([...metaLines, ...roleLines, ...qualityLines]).slice(0, 5);
+}
+
+function getStructuredChartHintLines(context?: string | null): string[] {
+  const normalized = context?.trim();
+  if (!normalized || !hasStructuredTableContext(normalized)) return [];
+
+  return getSectionLines(normalized, "CHART_HINTS")
+    .map(stripListPrefix)
+    .filter(Boolean)
+    .filter((line) => !line.includes("뚜렷한 차트 힌트를 찾지 못했습니다"));
+}
+
+function parseStructuredChartHintLine(line: string): { chartType: string; rationale: string } | null {
+  const match = line.match(/^(.+?)\s*\+\s*(.+?)\s*->\s*([a-z-]+)\s*\((.+)\)$/i);
+  if (!match) return null;
+
+  const [, dimension, metric, chartType, reason] = match;
+  const normalizedChartType = chartType.trim();
+  const normalizedReason = reason.trim();
+  const rationale = formatChartRecommendationReason(normalizedReason);
+
+  return {
+    chartType: normalizedChartType,
+    rationale: `${dimension.trim()}와 ${metric.trim()} 기준으로 ${rationale}`,
+  };
+}
+
+function buildBestRecommendationByTable(
+  analysisData: AnalysisData | null | undefined,
+  tables: SourceTable[]
+): Map<string, { chartType: string; rationale: string }> {
+  const validTableIds = tables.map((table) => table.id);
+  const bestRecommendationByTable = new Map<string, { chartType: string; rationale: string }>();
+  const tableIdSet = new Set(validTableIds);
+  const bestScoreByTable = new Map<string, number>();
+
+  for (const recommendation of analysisData?.chartRecommendations ?? []) {
+    const tableId = recommendation.tableId?.trim();
+    if (!tableId || !tableIdSet.has(tableId)) continue;
+    const currentBestScore = bestScoreByTable.get(tableId) ?? Number.NEGATIVE_INFINITY;
+    if (recommendation.score <= currentBestScore) continue;
+    bestScoreByTable.set(tableId, recommendation.score);
+    bestRecommendationByTable.set(tableId, {
+      chartType: recommendation.chartType,
+      rationale: formatChartRecommendationReason(recommendation.reason),
+    });
+  }
+
+  const logicalTables = analysisData?.tableData?.logicalTables ?? [];
+  if (logicalTables.length > 0) {
+    for (const logicalTable of logicalTables) {
+      if (!tableIdSet.has(logicalTable.id) || bestRecommendationByTable.has(logicalTable.id)) continue;
+      const bestRecommendation = buildChartRecommendations({ columns: logicalTable.columns, rows: logicalTable.rows })[0];
+      if (!bestRecommendation) continue;
+      bestRecommendationByTable.set(logicalTable.id, {
+        chartType: bestRecommendation.chartType,
+        rationale: formatChartRecommendationReason(bestRecommendation.reason),
+      });
+    }
+  } else if (analysisData?.tableData && validTableIds.length === 1 && !bestRecommendationByTable.has(validTableIds[0])) {
+    const bestRecommendation = buildChartRecommendations(analysisData.tableData)[0];
+    if (bestRecommendation) {
+      bestRecommendationByTable.set(validTableIds[0], {
+        chartType: bestRecommendation.chartType,
+        rationale: formatChartRecommendationReason(bestRecommendation.reason),
+      });
+    }
+  }
+
+  for (const table of tables) {
+    if (bestRecommendationByTable.has(table.id)) continue;
+    bestRecommendationByTable.set(table.id, buildGenericFallbackRecommendation(table));
+  }
+
+  return bestRecommendationByTable;
+}
+
+function buildGenericFallbackRecommendation(table: SourceTable): { chartType: string; rationale: string } {
+  if (table.metrics.length > 0 && table.dimensions.length > 0) {
+    return {
+      chartType: "bar",
+      rationale: `${table.dimensions[0]} 기준으로 ${table.metrics[0]} 값을 비교하기에 적합합니다.`,
+    };
+  }
+
+  if (table.metrics.length > 0) {
+    return {
+      chartType: "bar",
+      rationale: `${table.metrics[0]} 중심의 수치 차이를 비교하기에 적합합니다.`,
+    };
+  }
+
+  if (table.dimensions.length > 0) {
+    return {
+      chartType: "bar",
+      rationale: `${table.dimensions[0]} 중심의 범주 구성을 비교하기에 적합합니다.`,
+    };
+  }
+
+  return {
+    chartType: "bar",
+    rationale: "표의 핵심 값들을 비교해 보여주기에 가장 기본적인 형태입니다.",
+  };
+}
+
+function toDisplaySafeTableContext(context?: string | null): string {
+  const normalized = context?.trim();
+  if (!normalized) return "";
+  if (!hasStructuredTableContext(normalized)) return normalized;
+
+  const metaSummary = getStructuredTableContextSummaryLines(normalized)
+    .filter((line) => line.startsWith("논리 표 수:") || line.startsWith("대표 표:") || line.startsWith("행 수:"))
+    .join(" · ");
+
+  return metaSummary || getStructuredTableContextSummaryLines(normalized).join(" · ");
+}
+
 function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
   if (analysisData?.sheetStructure?.tables?.length) {
     const primaryTableId = analysisData?.visualizationBrief?.primaryTableId ?? analysisData.sheetStructure.tables[0]?.id;
@@ -137,7 +326,10 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
   }
 
   if (analysisData?.sourceInventory?.tables && analysisData.sourceInventory.tables.length > 0) {
-    return analysisData.sourceInventory.tables;
+    return analysisData.sourceInventory.tables.map((table) => ({
+      ...table,
+      context: toDisplaySafeTableContext(table.context),
+    }));
   }
 
   const tableData = analysisData?.tableData;
@@ -166,7 +358,7 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
       name: tableData.sheetName?.trim() || analysisData?.title?.trim() || "기본 표",
       role: "primary",
       purpose: "핵심 데이터 구조 파악",
-      context: analysisData?.tableContext?.trim() || "업로드된 표의 핵심 구조와 수치를 해석하기 위한 기본 표입니다.",
+      context: toDisplaySafeTableContext(analysisData?.tableContext) || "업로드된 표의 핵심 구조와 수치를 해석하기 위한 기본 표입니다.",
       dimensions: dimensionCandidates,
       metrics: metricCandidates,
       grain: tableData.sheetName ? "sheet" : undefined,
@@ -209,7 +401,7 @@ function deriveVisualizationBrief(analysisData?: AnalysisData | null): Visualiza
   const coreMessage =
     analysisData?.summaries[0]?.lines?.[0]?.text ||
     analysisData?.summaries[1]?.lines?.[0]?.text ||
-    analysisData?.tableContext?.trim() ||
+    toDisplaySafeTableContext(analysisData?.tableContext) ||
     "핵심 변화와 비교 포인트가 잘 드러나는 구조로 정리합니다.";
 
   const storyFlow = compactUnique([
@@ -328,10 +520,10 @@ export function getAnalysisTitle(analysisData?: AnalysisData | null, fallbackTit
 
 export function getDatasetSummary(analysisData?: AnalysisData | null): string {
   return (
-    analysisData?.dataset?.summary?.trim() ||
+    toDisplaySafeTableContext(analysisData?.dataset?.summary) ||
     analysisData?.summaries[1]?.lines?.[0]?.text ||
     analysisData?.summaries[0]?.lines?.[0]?.text ||
-    analysisData?.tableContext?.trim() ||
+    toDisplaySafeTableContext(analysisData?.tableContext) ||
     ""
   );
 }
@@ -422,7 +614,6 @@ export function getTableInsightContextCards(analysisData?: AnalysisData | null):
       );
       const fallbackContexts = contexts.length > 0 ? [] : compactUnique([
         table.purpose,
-        table.context,
       ]);
       const resolvedContexts = compactUnique([...contexts, ...fallbackContexts]).slice(0, 2);
       const cautions = compactUnique(
@@ -443,6 +634,81 @@ export function getTableInsightContextCards(analysisData?: AnalysisData | null):
       };
     })
     .filter((card) => card.coreInsights.length > 0 || card.contexts.length > 0 || card.chartHints.length > 0 || card.cautions.length > 0);
+}
+
+export function getTableChartRecommendationCaptionItems(
+  analysisData?: AnalysisData | null
+): TableChartRecommendationCaptionItem[] {
+  const tables = deriveSourceTables(analysisData);
+  if (tables.length === 0) return [];
+
+  const tableNameById = new Map(tables.map((table) => [table.id, table.name]));
+  const resolvedPrimaryTableId =
+    analysisData?.visualizationBrief?.primaryTableId && tables.some((table) => table.id === analysisData.visualizationBrief?.primaryTableId)
+      ? analysisData.visualizationBrief.primaryTableId
+      : tables[0]?.id ?? "table-1";
+  const topRecommendationByTable = new Map<string, { chartType: string; rationale: string }>();
+  const allowPrimaryFallback = tables.length === 1;
+  const fallbackTableIds = tables.map((table) => table.id);
+
+  for (const [tableId, recommendation] of buildBestRecommendationByTable(analysisData, tables)) {
+    topRecommendationByTable.set(tableId, recommendation);
+  }
+
+  const regeneratedRecommendations = analysisData?.tableData
+    ? buildChartRecommendationsForLogicalTables(analysisData.tableData, fallbackTableIds)
+    : [];
+  for (const recommendation of regeneratedRecommendations) {
+    const requestedTableId = recommendation.tableId?.trim();
+    const resolvedTableId = requestedTableId && tableNameById.has(requestedTableId)
+      ? requestedTableId
+      : allowPrimaryFallback
+        ? resolvedPrimaryTableId
+        : null;
+    if (!resolvedTableId || topRecommendationByTable.has(resolvedTableId)) continue;
+    topRecommendationByTable.set(resolvedTableId, {
+      chartType: recommendation.chartType,
+      rationale: formatChartRecommendationReason(recommendation.reason),
+    });
+  }
+
+  for (const direction of analysisData?.visualizationBrief?.chartDirections ?? []) {
+    const requestedTableId = direction.tableId?.trim();
+    const resolvedTableId = requestedTableId && tableNameById.has(requestedTableId)
+      ? requestedTableId
+      : allowPrimaryFallback
+        ? resolvedPrimaryTableId
+        : null;
+    if (!resolvedTableId) continue;
+    if (!topRecommendationByTable.has(resolvedTableId)) {
+      topRecommendationByTable.set(resolvedTableId, {
+        chartType: direction.chartType,
+        rationale: direction.goal,
+      });
+    }
+  }
+
+  const structuredChartHint = getStructuredChartHintLines(analysisData?.tableContext)
+    .map(parseStructuredChartHintLine)
+    .find((item): item is { chartType: string; rationale: string } => item !== null);
+
+  if (tables.length === 1 && structuredChartHint && !topRecommendationByTable.has(resolvedPrimaryTableId)) {
+    topRecommendationByTable.set(resolvedPrimaryTableId, structuredChartHint);
+  }
+
+  return tables
+    .map((table) => {
+      const recommendation = topRecommendationByTable.get(table.id);
+      if (!recommendation) return null;
+
+      return {
+        tableId: table.id,
+        tableTitle: tableNameById.get(table.id) ?? table.name,
+        recommendedChart: formatChartTypeLabel(recommendation.chartType),
+        rationale: recommendation.rationale,
+      };
+    })
+    .filter((item): item is TableChartRecommendationCaptionItem => item !== null);
 }
 
 export function getVisualizationPrompt(analysisData?: AnalysisData | null): string {
@@ -509,15 +775,9 @@ export function getTableContextHighlights(analysisData?: AnalysisData | null): s
   const context = analysisData?.tableContext?.trim();
   if (!context) return [];
 
-  const metaLines = getSectionLines(context, "DATASET_META")
-    .filter((line) => !line.includes("형식:"))
-    .map((line) => line.replace(/^-\s*/, ""));
-  const roleLines = getSectionLines(context, "FIELD_ROLES")
-    .slice(0, 2)
-    .map((line) => line.replace(/^-\s*/, ""));
-  const qualityLines = getSectionLines(context, "DATA_QUALITY")
-    .slice(0, 1)
-    .map((line) => line.replace(/^-\s*/, ""));
+  if (hasStructuredTableContext(context)) {
+    return getStructuredTableContextSummaryLines(context);
+  }
 
-  return compactUnique([...metaLines, ...roleLines, ...qualityLines]).slice(0, 5);
+  return compactUnique(context.split(/\n+/)).slice(0, 5);
 }

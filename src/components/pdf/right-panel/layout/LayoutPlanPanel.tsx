@@ -673,6 +673,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
       await persistAnalysisData({
         ...analysisData,
         selectedSourceTableIds: nextSelection,
+        visualizationBrief: undefined,
       });
     },
     [analysisData, persistAnalysisData, selectedSourceTableIds, sourceTables]
