@@ -97,6 +97,29 @@ export type LogicalTableSource = "detected" | "sheet";
 export type LogicalTableOrientation = "row-major" | "column-major" | "ambiguous";
 export type LogicalTableHeaderAxis = "row" | "column" | "ambiguous";
 
+export interface LogicalTableStructureCandidate {
+  structure: AnalysisTableStructureKind;
+  confidence: number;
+  reason?: string;
+}
+
+export interface LogicalTableStructureHint {
+  winner: AnalysisTableStructureKind;
+  confidence: number;
+  scores: Record<AnalysisTableStructureKind, number>;
+  headerAxis: AnalysisTableHeader["axis"];
+  headerRows?: number[];
+  headerCols?: number[];
+  dataRegion?: {
+    startRow: number;
+    endRow: number;
+    startCol: number;
+    endCol: number;
+  };
+  candidates?: LogicalTableStructureCandidate[];
+  reviewReasons?: string[];
+}
+
 export interface LogicalTable {
   id: string;
   name: string;
@@ -113,6 +136,7 @@ export interface LogicalTable {
   rowCount: number;
   columnCount: number;
   normalizationNotes?: string[];
+  localStructureHint?: LogicalTableStructureHint;
 }
 
 export interface TableRelation {

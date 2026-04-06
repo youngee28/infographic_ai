@@ -525,6 +525,31 @@ export const normalizedTableSchema = z.object({
       rowCount: z.number().int().nonnegative(),
       columnCount: z.number().int().nonnegative(),
       normalizationNotes: z.array(z.string()).optional(),
+      localStructureHint: z.object({
+        winner: z.enum(["row-major", "column-major", "mixed", "ambiguous"]),
+        confidence: z.number(),
+        scores: z.object({
+          "row-major": z.number(),
+          "column-major": z.number(),
+          mixed: z.number(),
+          ambiguous: z.number(),
+        }),
+        headerAxis: z.enum(["row", "column", "mixed", "ambiguous"]),
+        headerRows: z.array(z.number().int().positive()).optional(),
+        headerCols: z.array(z.number().int().positive()).optional(),
+        dataRegion: z.object({
+          startRow: z.number().int().positive(),
+          endRow: z.number().int().positive(),
+          startCol: z.number().int().positive(),
+          endCol: z.number().int().positive(),
+        }).optional(),
+        candidates: z.array(z.object({
+          structure: z.enum(["row-major", "column-major", "mixed", "ambiguous"]),
+          confidence: z.number(),
+          reason: z.string().trim().optional(),
+        })).optional(),
+        reviewReasons: z.array(z.string().trim().min(1)).optional(),
+      }).optional(),
     })
   ).optional(),
   primaryLogicalTableId: z.string().trim().optional(),
@@ -896,8 +921,8 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
             tables: rawTableData.data.logicalTables?.map((table) => ({
               id: table.id,
               title: table.name,
-              structure: table.orientation,
-              confidence: table.confidence,
+              structure: table.localStructureHint?.winner ?? table.orientation,
+              confidence: table.localStructureHint?.confidence ?? table.confidence,
               range: {
                 startRow: table.startRow,
                 endRow: table.endRow,
@@ -905,11 +930,27 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
                 endCol: table.endCol,
               },
               header: {
-                axis: table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous",
+                axis: table.localStructureHint?.headerAxis ?? (table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous"),
+                headerRows: table.localStructureHint?.headerRows,
+                headerCols: table.localStructureHint?.headerCols,
               },
+              dataRegion: table.localStructureHint?.dataRegion,
               dimensions: table.columns.slice(0, 2),
               metrics: table.columns.slice(2),
               notes: table.normalizationNotes,
+              candidates: table.localStructureHint?.candidates?.map((candidate) => ({
+                range: {
+                  startRow: table.startRow,
+                  endRow: table.endRow,
+                  startCol: table.startCol,
+                  endCol: table.endCol,
+                },
+                structure: candidate.structure,
+                confidence: candidate.confidence,
+                reason: candidate.reason,
+              })),
+              reviewReasons: table.localStructureHint?.reviewReasons,
+              needsReview: (table.localStructureHint?.reviewReasons?.length ?? 0) > 0,
             })) ?? (rawTableData.data.rowCount > 0 ? [{
               id: "table-1",
               title: rawTableData.data.sheetName?.trim() || rawTitle,
@@ -929,11 +970,12 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
                 id: table.id,
                 name: table.name,
                 role: table.id === (rawTableData.data.primaryLogicalTableId ?? rawTableData.data.logicalTables?.[0]?.id) ? "primary" : table.orientation === "column-major" ? "reference" : "supporting",
-                purpose: table.orientation === "column-major" ? "열 방향 표 구조 파악" : "행 방향 표 구조 파악",
+                purpose: (table.localStructureHint?.winner ?? table.orientation) === "mixed" ? "행과 열 헤더가 혼합된 표 구조 파악" : table.orientation === "column-major" ? "열 방향 표 구조 파악" : "행 방향 표 구조 파악",
                 context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열 범위의 논리 표입니다.`,
                 dimensions: table.columns.slice(0, 2),
                 metrics: table.columns.slice(2),
-                grain: table.orientation,
+                grain: table.localStructureHint?.winner ?? table.orientation,
+                structure: table.localStructureHint?.winner ?? table.orientation,
               }))
             : [{
                 id: "table-1",
@@ -1023,8 +1065,8 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
             tables: data.tableData.logicalTables?.map((table) => ({
               id: table.id,
               title: table.name,
-              structure: table.orientation,
-              confidence: table.confidence,
+              structure: table.localStructureHint?.winner ?? table.orientation,
+              confidence: table.localStructureHint?.confidence ?? table.confidence,
               range: {
                 startRow: table.startRow,
                 endRow: table.endRow,
@@ -1032,11 +1074,27 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
                 endCol: table.endCol,
               },
               header: {
-                axis: table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous",
+                axis: table.localStructureHint?.headerAxis ?? (table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous"),
+                headerRows: table.localStructureHint?.headerRows,
+                headerCols: table.localStructureHint?.headerCols,
               },
+              dataRegion: table.localStructureHint?.dataRegion,
               dimensions: table.columns.slice(0, 2),
               metrics: table.columns.slice(2),
               notes: table.normalizationNotes,
+              candidates: table.localStructureHint?.candidates?.map((candidate) => ({
+                range: {
+                  startRow: table.startRow,
+                  endRow: table.endRow,
+                  startCol: table.startCol,
+                  endCol: table.endCol,
+                },
+                structure: candidate.structure,
+                confidence: candidate.confidence,
+                reason: candidate.reason,
+              })),
+              reviewReasons: table.localStructureHint?.reviewReasons,
+              needsReview: (table.localStructureHint?.reviewReasons?.length ?? 0) > 0,
             })) ?? [{
               id: "table-1",
               title,

@@ -1,4 +1,10 @@
-import type { LogicalTable, LogicalTableHeaderAxis, LogicalTableOrientation } from "@/lib/session-types";
+import type {
+  AnalysisTableStructureKind,
+  LogicalTable,
+  LogicalTableHeaderAxis,
+  LogicalTableOrientation,
+  LogicalTableStructureHint,
+} from "@/lib/session-types";
 
 export type TableSourceType = "csv" | "xlsx";
 
@@ -23,6 +29,36 @@ export interface EditableLogicalTableView {
   columnCount: number;
 }
 
+export interface LayoutMetricSignal {
+  name: string;
+  kind: "number" | "percent" | "currency";
+  min?: string;
+  max?: string;
+  mean?: string;
+  sampleValues: string[];
+}
+
+export interface LayoutDimensionSignal {
+  name: string;
+  kind: InferredColumnKind;
+  cardinality: "low" | "medium" | "high";
+  distinctCount: number;
+  topValues: string[];
+}
+
+export interface LayoutDataSnippet {
+  rowCount: number;
+  columnCount: number;
+  orientationHint: AnalysisTableStructureKind | LogicalTableOrientation;
+  headerAxisHint: LogicalTableStructureHint["headerAxis"] | LogicalTableHeaderAxis;
+  timeAxisLikelyIn: "rows" | "columns" | "ambiguous" | "none";
+  categoryAxisLikelyIn: "rows" | "columns" | "ambiguous" | "none";
+  columnHeaderContainsYear: boolean;
+  rowHeaderContainsYear: boolean;
+  metricSignals: LayoutMetricSignal[];
+  dimensionSignals: LayoutDimensionSignal[];
+}
+
 interface ParseTableOptions {
   apiKey?: string;
 }
@@ -38,6 +74,18 @@ interface GeminiTableRangeProposal {
   confidence?: number;
   title?: string;
   reason?: string;
+}
+
+interface LocalStructureAssessment {
+  winner: AnalysisTableStructureKind;
+  confidence: number;
+  scores: Record<AnalysisTableStructureKind, number>;
+  headerAxis: LogicalTableStructureHint["headerAxis"];
+  headerRows?: number[];
+  headerCols?: number[];
+  dataRegion?: LogicalTableStructureHint["dataRegion"];
+  candidates?: LogicalTableStructureHint["candidates"];
+  reviewReasons?: string[];
 }
 
 const GEMINI_TABLE_RANGE_MODEL = "gemini-2.5-flash";
@@ -80,6 +128,17 @@ function cloneLogicalTable(table: LogicalTable): LogicalTable {
     columns: [...table.columns],
     rows: table.rows.map((row) => [...row]),
     normalizationNotes: table.normalizationNotes ? [...table.normalizationNotes] : undefined,
+    localStructureHint: table.localStructureHint
+      ? {
+          ...table.localStructureHint,
+          scores: { ...table.localStructureHint.scores },
+          headerRows: table.localStructureHint.headerRows ? [...table.localStructureHint.headerRows] : undefined,
+          headerCols: table.localStructureHint.headerCols ? [...table.localStructureHint.headerCols] : undefined,
+          dataRegion: table.localStructureHint.dataRegion ? { ...table.localStructureHint.dataRegion } : undefined,
+          candidates: table.localStructureHint.candidates?.map((candidate) => ({ ...candidate })),
+          reviewReasons: table.localStructureHint.reviewReasons ? [...table.localStructureHint.reviewReasons] : undefined,
+        }
+      : undefined,
   };
 }
 
@@ -381,6 +440,209 @@ function normalizeTable(rawRows: string[][], sourceType: TableSourceType, sheetN
   };
 }
 
+function clamp01(value: number): number {
+  if (value <= 0) return 0;
+  if (value >= 1) return 1;
+  return value;
+}
+
+function classifyCellSignal(value: string): "empty" | "numeric" | "date" | "boolean" | "text" {
+  const normalized = normalizeCellValue(value);
+  if (!normalized) return "empty";
+  if (parsePercentNumber(normalized) !== null || parseCurrencyNumber(normalized) !== null || parsePlainNumber(normalized) !== null) return "numeric";
+  if (isDateLike(normalized)) return "date";
+  if (isBooleanLike(normalized)) return "boolean";
+  return "text";
+}
+
+function summarizeCells(cells: string[]): {
+  nonEmptyCount: number;
+  textRatio: number;
+  numericRatio: number;
+  dateRatio: number;
+  booleanRatio: number;
+  uniqueRatio: number;
+} {
+  const normalized = cells.map(normalizeCellValue).filter(Boolean);
+  const nonEmptyCount = normalized.length;
+  if (nonEmptyCount === 0) {
+    return {
+      nonEmptyCount: 0,
+      textRatio: 0,
+      numericRatio: 0,
+      dateRatio: 0,
+      booleanRatio: 0,
+      uniqueRatio: 0,
+    };
+  }
+
+  let textCount = 0;
+  let numericCount = 0;
+  let dateCount = 0;
+  let booleanCount = 0;
+  for (const value of normalized) {
+    const signal = classifyCellSignal(value);
+    if (signal === "text") textCount += 1;
+    if (signal === "numeric") numericCount += 1;
+    if (signal === "date") dateCount += 1;
+    if (signal === "boolean") booleanCount += 1;
+  }
+
+  return {
+    nonEmptyCount,
+    textRatio: textCount / nonEmptyCount,
+    numericRatio: numericCount / nonEmptyCount,
+    dateRatio: dateCount / nonEmptyCount,
+    booleanRatio: booleanCount / nonEmptyCount,
+    uniqueRatio: new Set(normalized).size / nonEmptyCount,
+  };
+}
+
+function getColumnCells(rows: string[][], columnIndex: number): string[] {
+  return rows.map((row) => row[columnIndex] ?? "");
+}
+
+function inferHeaderBandIndexes(lines: string[][], mode: "row" | "column", maxDepth = 2): number[] {
+  const indexes: number[] = [];
+  const limit = Math.min(maxDepth, lines.length);
+  for (let index = 0; index < limit; index += 1) {
+    const summary = summarizeCells(lines[index] ?? []);
+    const labelStrength = summary.textRatio * 0.65 + summary.uniqueRatio * 0.35;
+    const dataStrength = Math.max(summary.numericRatio, summary.dateRatio, summary.booleanRatio);
+    const passes = summary.nonEmptyCount >= 2 && labelStrength >= (mode === "row" ? 0.58 : 0.52) && dataStrength <= 0.45;
+    if (!passes) break;
+    indexes.push(index);
+  }
+  return indexes;
+}
+
+function calculateLineConsistency(lines: string[][]): number {
+  const scores = lines
+    .map((line) => {
+      const summary = summarizeCells(line);
+      if (summary.nonEmptyCount < 2) return null;
+      return Math.max(summary.textRatio, summary.numericRatio, summary.dateRatio, summary.booleanRatio);
+    })
+    .filter((value): value is number => value !== null);
+
+  if (scores.length === 0) return 0;
+  return scores.reduce((sum, value) => sum + value, 0) / scores.length;
+}
+
+function buildLocalStructureAssessment(rawRows: string[][], rowMajorScore: number, columnMajorScore: number): LocalStructureAssessment {
+  const rowCount = rawRows.length;
+  const columnCount = Math.max(0, ...rawRows.map((row) => row.length));
+  const rowLines = rawRows.map((row) => Array.from({ length: columnCount }, (_, index) => row[index] ?? ""));
+  const columnLines = Array.from({ length: columnCount }, (_, index) => getColumnCells(rowLines, index));
+  const topHeaderRows = inferHeaderBandIndexes(rowLines, "row");
+  const leftHeaderCols = inferHeaderBandIndexes(columnLines, "column");
+  const rowHeaderSummary = summarizeCells(topHeaderRows.flatMap((index) => rowLines[index] ?? []));
+  const colHeaderSummary = summarizeCells(leftHeaderCols.flatMap((index) => columnLines[index] ?? []));
+  const rowConsistency = calculateLineConsistency(columnLines);
+  const columnConsistency = calculateLineConsistency(rowLines);
+  const scoreGap = rowMajorScore - columnMajorScore;
+  const rowSignal = clamp01(0.5 + scoreGap / 40) * 0.55 + clamp01(rowConsistency) * 0.45;
+  const columnSignal = clamp01(0.5 - scoreGap / 40) * 0.55 + clamp01(columnConsistency) * 0.45;
+  const headerRowCount = topHeaderRows.length;
+  const headerColCount = leftHeaderCols.length;
+  const hasInterior = rowCount - headerRowCount >= 2 && columnCount - headerColCount >= 2;
+  const interiorRows = hasInterior
+    ? rowLines.slice(headerRowCount).map((row) => row.slice(headerColCount))
+    : [];
+  const interiorSummary = summarizeCells(interiorRows.flatMap((row) => row));
+  const interiorConsistency = Math.max(calculateLineConsistency(interiorRows), calculateLineConsistency(transposeRows(interiorRows)));
+  const cornerValue = normalizeCellValue(rowLines[0]?.[0] ?? "");
+  const cornerSignal = cornerValue.length === 0 ? 1 : classifyCellSignal(cornerValue) === "text" ? 0.7 : 0.2;
+  const mixedSignal = clamp01(
+    rowHeaderSummary.textRatio * 0.24 +
+    colHeaderSummary.textRatio * 0.24 +
+    Math.max(rowHeaderSummary.uniqueRatio, colHeaderSummary.uniqueRatio) * 0.12 +
+    Math.max(interiorSummary.numericRatio, interiorSummary.dateRatio) * 0.2 +
+    interiorConsistency * 0.12 +
+    cornerSignal * 0.08
+  );
+  const ambiguousSignal = clamp01(1 - Math.max(rowSignal, columnSignal, mixedSignal));
+
+  const rawScores: Record<AnalysisTableStructureKind, number> = {
+    "row-major": Math.max(rowSignal, 0.01),
+    "column-major": Math.max(columnSignal, 0.01),
+    mixed: Math.max(mixedSignal, 0.01),
+    ambiguous: Math.max(ambiguousSignal, 0.01),
+  };
+  const total = Object.values(rawScores).reduce((sum, value) => sum + value, 0);
+  const scores: Record<AnalysisTableStructureKind, number> = {
+    "row-major": rawScores["row-major"] / total,
+    "column-major": rawScores["column-major"] / total,
+    mixed: rawScores.mixed / total,
+    ambiguous: rawScores.ambiguous / total,
+  };
+  const ranked = Object.entries(scores)
+    .map(([structure, confidence]) => ({ structure: structure as AnalysisTableStructureKind, confidence }))
+    .sort((left, right) => right.confidence - left.confidence);
+  const winner = ranked[0]?.structure ?? "ambiguous";
+  const winnerScore = ranked[0]?.confidence ?? 0;
+  const runnerUp = ranked[1]?.confidence ?? 0;
+  const margin = winnerScore - runnerUp;
+  const reviewReasons: string[] = [];
+  const dataRegion = hasInterior
+    ? {
+        startRow: headerRowCount + 1,
+        endRow: rowCount,
+        startCol: headerColCount + 1,
+        endCol: columnCount,
+      }
+    : undefined;
+
+  if (winner === "mixed" && (!dataRegion || headerRowCount === 0 || headerColCount === 0)) {
+    reviewReasons.push("mixed geometry incomplete");
+  }
+  if (winnerScore < 0.55) reviewReasons.push("low local structure confidence");
+  if (margin < 0.1) reviewReasons.push("local structure margin too small");
+  if (winner === "mixed" && winnerScore < 0.65) reviewReasons.push("mixed signal below threshold");
+
+  const normalizedWinner: AnalysisTableStructureKind =
+    winner === "mixed" && winnerScore >= 0.65 && margin >= 0.12 && headerRowCount > 0 && headerColCount > 0 && dataRegion
+      ? "mixed"
+      : winnerScore < 0.55 || margin < 0.1
+        ? "ambiguous"
+        : winner;
+
+  return {
+    winner: normalizedWinner,
+    confidence: normalizedWinner === "mixed"
+      ? Math.max(scores.mixed, 0.2)
+      : normalizedWinner === "row-major"
+        ? Math.max(scores["row-major"], 0.2)
+        : normalizedWinner === "column-major"
+          ? Math.max(scores["column-major"], 0.2)
+          : Math.max(scores.ambiguous, 0.2),
+    scores,
+    headerAxis: normalizedWinner === "mixed"
+      ? "mixed"
+      : normalizedWinner === "row-major"
+        ? "row"
+        : normalizedWinner === "column-major"
+          ? "column"
+          : "ambiguous",
+    headerRows: headerRowCount > 0 ? topHeaderRows.map((index) => index + 1) : undefined,
+    headerCols: headerColCount > 0 ? leftHeaderCols.map((index) => index + 1) : undefined,
+    dataRegion: normalizedWinner === "mixed" ? dataRegion : undefined,
+    candidates: ranked.slice(0, 3).map((candidate) => ({
+      structure: candidate.structure,
+      confidence: candidate.confidence,
+      reason:
+        candidate.structure === "mixed"
+          ? "top/left headers with dense interior data"
+          : candidate.structure === "row-major"
+            ? "column-wise consistency stronger"
+            : candidate.structure === "column-major"
+              ? "row-wise consistency stronger"
+              : "signals are conflicted",
+    })),
+    reviewReasons: reviewReasons.length > 0 ? reviewReasons : undefined,
+  };
+}
+
 function scoreNormalizedTable(table: TableData): number {
   if (table.columns.length === 0 || table.rows.length === 0) return Number.NEGATIVE_INFINITY;
 
@@ -416,6 +678,7 @@ function normalizeLogicalTable(
   const columnMajorTable = normalizeTable(transposeRows(rawRows), sourceType, sheetName);
   const rowMajorScore = scoreNormalizedTable(rowMajorTable);
   const columnMajorScore = scoreNormalizedTable(columnMajorTable);
+  const localStructureHint = buildLocalStructureAssessment(rawRows, rowMajorScore, columnMajorScore);
   const scoreGap = rowMajorScore - columnMajorScore;
   const normalized = scoreGap >= -6 ? rowMajorTable : columnMajorTable;
   const orientation: LogicalTableOrientation = Math.abs(scoreGap) <= 6 ? "ambiguous" : scoreGap > 0 ? "row-major" : "column-major";
@@ -443,6 +706,7 @@ function normalizeLogicalTable(
     rowCount: normalized.rowCount,
     columnCount: normalized.columnCount,
     normalizationNotes: normalized.normalizationNotes,
+    localStructureHint,
   };
 }
 
@@ -534,8 +798,13 @@ function shouldInvokeGeminiFallback(logicalTables: LogicalTable[], rawRows: stri
   const totalArea = Math.max(totalRows * Math.max(totalCols, 1), 1);
   const primaryArea = primary.rowCount * primary.columnCount;
   const dominantButWeak = primaryArea / totalArea > 0.75 && primary.confidence < 0.75;
+  const localHint = primary.localStructureHint;
+  const mixedCandidateNeedsGemini = Boolean(
+    localHint?.winner === "mixed" &&
+    (localHint.confidence < 0.7 || !localHint.dataRegion || (localHint.reviewReasons?.length ?? 0) > 0)
+  );
 
-  return primary.orientation === "ambiguous" || primary.confidence < 0.55 || dominantButWeak;
+  return primary.orientation === "ambiguous" || primary.confidence < 0.55 || dominantButWeak || mixedCandidateNeedsGemini;
 }
 
 function parseGeminiRangeResponse(input: string): GeminiTableRangeProposal[] {
@@ -1549,8 +1818,18 @@ export function buildTableContext(tableData: TableData): string {
   const logicalTableInventory = (tableData.logicalTables ?? []).map((table) => {
     const shape = `${table.rowCount}x${table.columnCount}`;
     const orientation = table.orientation === "column-major" ? "column-major" : table.orientation === "row-major" ? "row-major" : "ambiguous";
+    const hintedStructure = table.localStructureHint?.winner;
+    const localScores = table.localStructureHint
+      ? ` | localHints=row:${table.localStructureHint.scores["row-major"].toFixed(2)}, col:${table.localStructureHint.scores["column-major"].toFixed(2)}, mixed:${table.localStructureHint.scores.mixed.toFixed(2)}, amb:${table.localStructureHint.scores.ambiguous.toFixed(2)}`
+      : "";
+    const headerHint = table.localStructureHint?.headerAxis === "mixed"
+      ? ` | headerRows=${table.localStructureHint.headerRows?.join(",") || "-"} headerCols=${table.localStructureHint.headerCols?.join(",") || "-"}`
+      : "";
+    const dataRegionHint = table.localStructureHint?.dataRegion
+      ? ` | dataRegion=R${table.localStructureHint.dataRegion.startRow}-R${table.localStructureHint.dataRegion.endRow},C${table.localStructureHint.dataRegion.startCol}-C${table.localStructureHint.dataRegion.endCol}`
+      : "";
     const sample = table.rows[0]?.slice(0, 4).join(" | ") || "샘플 없음";
-    return `- ${table.id}: ${table.name} | 범위 R${table.startRow}-R${table.endRow}, C${table.startCol}-C${table.endCol} | shape=${shape} | orientation=${orientation} | confidence=${table.confidence.toFixed(2)} | columns=${table.columns.join(", ")} | sample=${sample}`;
+    return `- ${table.id}: ${table.name} | 범위 R${table.startRow}-R${table.endRow}, C${table.startCol}-C${table.endCol} | shape=${shape} | orientation=${orientation}${hintedStructure ? ` | hintedStructure=${hintedStructure}` : ""} | confidence=${table.confidence.toFixed(2)}${localScores}${headerHint}${dataRegionHint} | columns=${table.columns.join(", ")} | sample=${sample}`;
   });
   const profiles = profileColumns(tableData.columns, tableData.rows);
   const metricCandidates = rankMetricCandidates(profiles);
@@ -1598,4 +1877,97 @@ export function buildTableContext(tableData: TableData): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+type LayoutDataSnippetSource = Pick<TableData, "columns" | "rows" | "rowCount" | "columnCount"> & {
+  orientation?: LogicalTableOrientation;
+  headerAxis?: LogicalTableHeaderAxis;
+  localStructureHint?: Pick<LogicalTableStructureHint, "winner" | "headerAxis">;
+};
+
+function isYearLikeLabel(value: string): boolean {
+  const normalized = value.trim();
+  return /(?:19|20)\d{2}/.test(normalized) || /\b\d{2}년\b/.test(normalized) || /(?:19|20)\d{2}\s*년/.test(normalized);
+}
+
+function getRowHeaderValues(rows: string[][]): string[] {
+  return rows.map((row) => normalizeCellValue(row[0] ?? "")).filter(Boolean);
+}
+
+export function buildLayoutDataSnippet(tableData: LayoutDataSnippetSource): LayoutDataSnippet {
+  const profiles = profileColumns(tableData.columns, tableData.rows);
+  const metricCandidates = rankMetricCandidates(profiles);
+  const dimensionCandidates = rankDimensionCandidates(profiles);
+  const structureHint = tableData.localStructureHint?.winner ?? tableData.orientation ?? "ambiguous";
+  const headerAxisHint = tableData.localStructureHint?.headerAxis ?? tableData.headerAxis ?? "ambiguous";
+  const columnHeaderContainsYear = tableData.columns.slice(1).some(isYearLikeLabel);
+  const rowHeaderValues = getRowHeaderValues(tableData.rows);
+  const rowHeaderContainsYear = rowHeaderValues.some(isYearLikeLabel);
+  const hasDateDimension = dimensionCandidates.some((candidate) => {
+    const profile = profiles.find((item) => item.name === candidate.name);
+    return profile?.inferredKind === "date";
+  });
+  const hasCategoryLikeRows = rowHeaderValues.length > 0 && rowHeaderValues.some((value) => /[A-Za-z가-힣]/.test(value));
+  const timeAxisLikelyIn = hasDateDimension
+    ? headerAxisHint === "column"
+      ? "columns"
+      : headerAxisHint === "row"
+        ? "rows"
+        : columnHeaderContainsYear && !rowHeaderContainsYear
+          ? "columns"
+          : rowHeaderContainsYear && !columnHeaderContainsYear
+            ? "rows"
+            : "ambiguous"
+    : columnHeaderContainsYear && !rowHeaderContainsYear
+      ? "columns"
+      : rowHeaderContainsYear && !columnHeaderContainsYear
+        ? "rows"
+        : "none";
+  const categoryAxisLikelyIn = headerAxisHint === "column"
+    ? hasCategoryLikeRows
+      ? "rows"
+      : "ambiguous"
+    : headerAxisHint === "row"
+      ? profiles.some((profile) => profile.inferredKind === "text" && profile.index > 0)
+        ? "columns"
+        : "ambiguous"
+      : hasCategoryLikeRows && timeAxisLikelyIn === "columns"
+        ? "rows"
+        : timeAxisLikelyIn === "rows"
+          ? "columns"
+          : "ambiguous";
+  const metricSignals = metricCandidates
+    .map((candidate) => profiles.find((profile) => profile.name === candidate.name))
+    .filter((profile): profile is ColumnProfile => Boolean(profile))
+    .map((profile) => ({
+      name: profile.name,
+      kind: profile.inferredKind as LayoutMetricSignal["kind"],
+      min: profile.minValue !== undefined ? formatCompactNumber(profile.minValue) : undefined,
+      max: profile.maxValue !== undefined ? formatCompactNumber(profile.maxValue) : undefined,
+      mean: profile.meanValue !== undefined ? formatCompactNumber(profile.meanValue) : undefined,
+      sampleValues: profile.exampleValues.slice(0, 3).map((value) => truncateCell(value, 24)),
+    }));
+  const dimensionSignals = dimensionCandidates
+    .map((candidate) => profiles.find((profile) => profile.name === candidate.name))
+    .filter((profile): profile is ColumnProfile => Boolean(profile))
+    .map((profile) => ({
+      name: profile.name,
+      kind: profile.inferredKind,
+      cardinality: profile.cardinality,
+      distinctCount: profile.distinctCount,
+      topValues: profile.topValues.slice(0, 3).map((item) => truncateCell(item.value, 16)),
+    }));
+
+  return {
+    rowCount: tableData.rowCount,
+    columnCount: tableData.columnCount,
+    orientationHint: structureHint,
+    headerAxisHint,
+    timeAxisLikelyIn,
+    categoryAxisLikelyIn,
+    columnHeaderContainsYear,
+    rowHeaderContainsYear,
+    metricSignals,
+    dimensionSignals,
+  };
 }

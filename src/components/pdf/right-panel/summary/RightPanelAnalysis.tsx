@@ -22,10 +22,10 @@ interface RightPanelAnalysisProps {
 }
 
 export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanelAnalysisProps) {
-  const reviewReasons = [
+  const reviewReasons = Array.from(new Set([
     ...(analysisData.reviewReasons ?? []),
     ...(analysisData.sheetStructure?.reviewReason ? [analysisData.sheetStructure.reviewReason] : []),
-  ];
+  ]));
   const tables = getSourceTables(analysisData);
   const relations = getTableRelations(analysisData);
   const tableInsightContextCards = getTableInsightContextCards(analysisData);

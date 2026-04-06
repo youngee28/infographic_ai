@@ -13,8 +13,8 @@ export function ReviewBanner({ reasons }: ReviewBannerProps) {
         <AlertTriangle className="w-4 h-4" /> 구조 재확인 필요
       </div>
       <div className="space-y-1.5">
-        {reasons.map((reason) => (
-          <div key={reason} className="text-[12.5px] leading-relaxed text-amber-900">
+        {reasons.map((reason, index) => (
+          <div key={`review-reason-${index}-${reason}`} className="text-[12.5px] leading-relaxed text-amber-900">
             {reason}
           </div>
         ))}

@@ -28,10 +28,12 @@ import type {
 } from "@/lib/session-types";
 import { formatSlicedGrid, parseRawGridBase64, parseRawGridFile, serializeRawGridForGemini, sliceGridByRange } from "@/lib/table-parser";
 import {
+  buildLayoutDataSnippet,
   buildTableContext,
   getDatasetTitle,
   parseTableFile,
   syncPrimaryLogicalTableToTopLevel,
+  type LayoutDataSnippet,
   type TableData,
   updateLogicalTableCell,
   updateLogicalTableHeader,
@@ -109,6 +111,109 @@ function normalizeNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function findFirstJsonBoundary(input: string): { jsonText: string; trailingText: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const opening = trimmed[0];
+  const closing = opening === "{" ? "}" : opening === "[" ? "]" : null;
+  if (!closing) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const character = trimmed[index];
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (character === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (character === opening) {
+      depth += 1;
+      continue;
+    }
+
+    if (character === closing) {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          jsonText: trimmed.slice(0, index + 1),
+          trailingText: trimmed.slice(index + 1).trim(),
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function isUnsafeTrailingJsonText(value: string): boolean {
+  const trimmed = value.trimStart();
+  return trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith("```");
+}
+
+function parseGeminiJsonResponse<T>(text: string, context: { model: string }): T {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    throw new Error("Gemini returned an empty JSON payload.");
+  }
+
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch (directParseError) {
+    const boundary = findFirstJsonBoundary(trimmed);
+    if (boundary) {
+      const salvaged = tryParseJson<T>(boundary.jsonText);
+      if (salvaged.ok && !isUnsafeTrailingJsonText(boundary.trailingText)) {
+        if (boundary.trailingText) {
+          console.warn("[Gemini JSON] Ignored trailing text after JSON response.", {
+            model: context.model,
+            trailingLength: boundary.trailingText.length,
+          });
+        }
+        return salvaged.value;
+      }
+    }
+
+    console.error("[Gemini JSON] Failed to parse model response.", {
+      model: context.model,
+      responseLength: trimmed.length,
+      error: directParseError instanceof Error ? directParseError.message : String(directParseError),
+    });
+
+    throw new Error(`Gemini returned malformed JSON for model ${context.model}. Check console metadata for details.`);
+  }
+}
+
+function tryParseJson<T>(value: string): { ok: true; value: T } | { ok: false; error: Error } {
+  try {
+    return { ok: true, value: JSON.parse(value) as T };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
 interface LayoutTableBrief {
   tableId: string;
   name: string;
@@ -124,6 +229,7 @@ interface LayoutTableBrief {
     metric?: string;
     goal: string;
   };
+  dataSnippet?: LayoutDataSnippet;
 }
 
 function isLayoutAspectRatio(value: unknown): value is LayoutAspectRatio {
@@ -414,11 +520,17 @@ function buildSourceInventory(fileName: string, tableData: TableData) {
         id: table.id,
         name: table.name,
         role: table.id === primaryLogicalTableId ? "primary" as const : table.orientation === "column-major" ? "reference" as const : "supporting" as const,
-        purpose: table.orientation === "column-major" ? "열 기준 항목 구조를 파악합니다." : "행 기준 레코드 구조를 파악합니다.",
+        purpose:
+          (table.localStructureHint?.winner ?? table.orientation) === "mixed"
+            ? "행/열 헤더가 혼합된 표 구조를 파악합니다."
+            : table.orientation === "column-major"
+              ? "열 기준 항목 구조를 파악합니다."
+              : "행 기준 레코드 구조를 파악합니다.",
         context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열에서 감지한 논리 표입니다.`,
         dimensions: table.columns.slice(0, 2),
         metrics: table.columns.slice(2),
-        grain: table.orientation,
+        grain: table.localStructureHint?.winner ?? table.orientation,
+        structure: table.localStructureHint?.winner ?? table.orientation,
       })),
       relations: [],
     };
@@ -449,8 +561,8 @@ function buildInitialSheetStructure(fileName: string, tableData: TableData): Ana
       tables: tableData.logicalTables.map((table) => ({
         id: table.id,
         title: table.name,
-        structure: table.orientation,
-        confidence: table.confidence,
+        structure: table.localStructureHint?.winner ?? table.orientation,
+        confidence: table.localStructureHint?.confidence ?? table.confidence,
         range: {
           startRow: table.startRow,
           endRow: table.endRow,
@@ -458,11 +570,27 @@ function buildInitialSheetStructure(fileName: string, tableData: TableData): Ana
           endCol: table.endCol,
         },
         header: {
-          axis: table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous",
+          axis: table.localStructureHint?.headerAxis ?? (table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous"),
+          headerRows: table.localStructureHint?.headerRows,
+          headerCols: table.localStructureHint?.headerCols,
         },
+        dataRegion: table.localStructureHint?.dataRegion,
         dimensions: table.columns.slice(0, 2),
         metrics: table.columns.slice(2),
         notes: table.normalizationNotes,
+        candidates: table.localStructureHint?.candidates?.map((candidate) => ({
+          range: {
+            startRow: table.startRow,
+            endRow: table.endRow,
+            startCol: table.startCol,
+            endCol: table.endCol,
+          },
+          structure: candidate.structure,
+          confidence: candidate.confidence,
+          reason: candidate.reason,
+        })),
+        reviewReasons: table.localStructureHint?.reviewReasons,
+        needsReview: (table.localStructureHint?.reviewReasons?.length ?? 0) > 0,
       })),
     };
   }
@@ -593,10 +721,35 @@ async function callGeminiJson<T>(apiKey: string, model: string, prompt: string):
     throw new Error("No JSON response from Gemini");
   }
 
-  return JSON.parse(text) as T;
+  return parseGeminiJsonResponse<T>(text, { model });
 }
 
-function buildStructurePrompt(rawGridText: string) {
+function buildLocalStructureHints(tableData?: TableData): string {
+  const logicalTables = tableData?.logicalTables ?? [];
+  if (logicalTables.length === 0) return "";
+
+  return logicalTables
+    .map((table) => {
+      const hint = table.localStructureHint;
+      if (!hint) {
+        return `- ${table.id}: no local structure hint`;
+      }
+
+      const scores = `row=${hint.scores["row-major"].toFixed(2)}, column=${hint.scores["column-major"].toFixed(2)}, mixed=${hint.scores.mixed.toFixed(2)}, ambiguous=${hint.scores.ambiguous.toFixed(2)}`;
+      const headerRows = hint.headerRows?.join(",") || "-";
+      const headerCols = hint.headerCols?.join(",") || "-";
+      const dataRegion = hint.dataRegion
+        ? `R${hint.dataRegion.startRow}-R${hint.dataRegion.endRow} / C${hint.dataRegion.startCol}-C${hint.dataRegion.endCol}`
+        : "-";
+      const reasons = hint.reviewReasons?.join(" | ") || "none";
+
+      return `- ${table.id}: range=R${table.startRow}-R${table.endRow} / C${table.startCol}-C${table.endCol}, winner=${hint.winner}, confidence=${hint.confidence.toFixed(2)}, scores=[${scores}], headerAxis=${hint.headerAxis}, headerRows=${headerRows}, headerCols=${headerCols}, dataRegion=${dataRegion}, reviewReasons=${reasons}`;
+    })
+    .join("\n");
+}
+
+function buildStructurePrompt(rawGridText: string, tableData?: TableData) {
+  const localHints = buildLocalStructureHints(tableData);
   return `당신은 스프레드시트 구조 분석기입니다.
 
 중요:
@@ -636,6 +789,12 @@ function buildStructurePrompt(rawGridText: string) {
     ]
   }
 }
+
+[LOCAL_HINTS]
+${localHints || "- no local hints"}
+
+- 위 LOCAL_HINTS는 로컬 휴리스틱 결과입니다. 그대로 복사하지 말고 RAW GRID를 우선으로 검증하세요.
+- row/column/mixed 판단이 애매하면 LOCAL_HINTS의 headerRows/headerCols/dataRegion를 참고해 재검토하세요.
 
 [RAW GRID]
 ${rawGridText}`.trim();
@@ -750,6 +909,9 @@ function buildLayoutTableBriefs(params: {
   const sourceTableById = new Map(
     (params.sourceTables ?? []).map((table) => [resolveLogicalTableId(table.id, aliases) ?? table.id, table])
   );
+  const logicalTableById = new Map(
+    (params.tableData?.logicalTables ?? []).map((table) => [resolveLogicalTableId(table.id, aliases) ?? table.id, table])
+  );
   const selectedIdSet = new Set(params.selectedSourceTableIds);
 
   return params.sheetStructure.tables
@@ -758,6 +920,8 @@ function buildLayoutTableBriefs(params: {
       if (selectedIdSet.size > 0 && !selectedIdSet.has(resolvedTableId)) return [];
 
       const sourceTable = sourceTableById.get(resolvedTableId);
+      const briefTableData = logicalTableById.get(resolvedTableId)
+        ?? (logicalTableById.size === 0 && params.tableData ? params.tableData : undefined);
       return [{
         tableId: resolvedTableId,
         name: sourceTable?.name || table.title,
@@ -773,6 +937,7 @@ function buildLayoutTableBriefs(params: {
           aliases,
           tableData: params.tableData,
         }),
+        dataSnippet: briefTableData ? buildLayoutDataSnippet(briefTableData) : undefined,
       } satisfies LayoutTableBrief];
     })
     .filter(
@@ -795,8 +960,8 @@ function hasReadyLayoutBriefInputs(params: {
   return (params.tableInterpretations?.length ?? 0) === params.sheetStructure.tables.length;
 }
 
-async function runStructureAnalysis(apiKey: string, model: string, rawGridText: string) {
-  return callGeminiJson<{ schemaVersion?: string; sheetStructure?: AnalysisSheetStructure }>(apiKey, model, buildStructurePrompt(rawGridText));
+async function runStructureAnalysis(apiKey: string, model: string, rawGridText: string, tableData?: TableData) {
+  return callGeminiJson<{ schemaVersion?: string; sheetStructure?: AnalysisSheetStructure }>(apiKey, model, buildStructurePrompt(rawGridText, tableData));
 }
 
 async function runTableInterpretation(
@@ -831,6 +996,11 @@ function buildComposeLayoutPrompt(params: {
 - KPI 카드, takeaway, note, 요약 메모, 핵심 시사점 박스는 만들지 마세요.
 - 설명 문단보다 차트와 범례 중심으로 구성하세요.
 - section.title, chart.title, plan.name, description은 데이터 의미가 드러나는 구체적인 문장으로 쓰고, "섹션 1", "차트 1", "시안 1" 같은 generic 라벨은 피하세요.
+- chart.title과 goal은 반드시 해당 chart의 dimension/metric/tableId와 의미적으로 일치해야 합니다. 제목만 과장되게 앞서가거나 다른 카테고리/다른 지표를 대신 말하면 안 됩니다.
+- chart.title이나 section.title에 특정 카테고리명(예: 서울, 경기/인천, 게임/콘텐츠)을 썼다면, 그 카테고리는 반드시 해당 chart가 실제로 보여주는 label 문맥이나 dataSnippet/chartHint의 핵심 근거와 일치해야 합니다.
+- 특정 카테고리명을 제목에 쓸 때는 dataSnippet, chartHint, dimensions/metrics 중 최소 하나에서 그 카테고리가 핵심 근거로 드러나야 합니다. 근거가 약하면 개별 카테고리명이 아니라 비교 축 자체(예: 지역별 매출 비중 비교)를 제목으로 쓰세요.
+- 지역별/업종별/연도별처럼 비교 축이 분명한 표는 차트 제목과 goal에서 그 차원(dimension)을 보존하세요. metric만 단독으로 말하는 제목(예: "매출액 비중과 기업수 비중")으로 끝내지 마세요.
+- 한 chart는 하나의 일관된 해석만 표현해야 합니다. 제목은 경기/인천을 말하면서 실제 값은 서울 수치를 보여주는 식의 혼합을 절대 만들지 마세요.
 - JSON만 반환하고, 마크다운 코드블록이나 설명 문장은 포함하지 마세요.
 
 ## [Design Basis] 아래 구조와 차트 힌트를 설계의 출발점으로 삼으세요
@@ -846,6 +1016,14 @@ ${JSON.stringify(sheetStructure, null, 2)}
 ${JSON.stringify(layoutTableBriefs, null, 2)}
 
 ## [Soft Guidance] 데이터에 따라 조정 가능한 가이드라인입니다
+- TABLE_BRIEFS의 chartHint가 있으면 이를 1순위 차트 추천으로 사용하세요. dataSnippet은 chartHint를 검증하거나 제목/구성 우선순위를 다듬는 보조 근거입니다.
+- dataSnippet을 볼 때는 metricSignals의 범위/평균보다 dimensionSignals의 kind/cardinality/topValues를 더 우선해서 해석하세요. 예: date면 line, low-cardinality 범주면 bar/donut/pie, 보조 범주가 분명하면 stacked-bar를 우선 검토하세요.
+- dataSnippet의 orientationHint/headerAxisHint/timeAxisLikelyIn/categoryAxisLikelyIn을 축 선택의 핵심 근거로 사용하세요. 특히 timeAxisLikelyIn이 "columns"면 연도 헤더가 가로로 흐르는 표로 보고, column header를 X축으로 우선 사용하세요.
+- columnHeaderContainsYear=true 이고 categoryAxisLikelyIn이 "rows"면 첫 열의 카테고리(예: 매출액, 종사자 수)를 X축으로 쓰지 말고, 열 헤더의 시간축을 먼저 사용하세요. 이 경우 카테고리는 별도 시리즈나 비교 대상 후보로 해석하세요.
+- rowHeaderContainsYear=true 이고 categoryAxisLikelyIn이 "columns"면 첫 행 또는 첫 열의 연도 축을 우선 시간축으로 사용하고, 열 방향 카테고리는 시리즈나 비교 대상 후보로 해석하세요.
+- strongest insight를 고를 때는 키워드가 눈에 띄는 카테고리가 아니라 실제 우세한 값/비중/추세를 우선하세요. 예를 들어 지역별 비중 표라면 가장 큰 점유 지역을 근거 없이 놓치지 마세요.
+- 비교형 차트라면 우선 "무엇을 무엇 기준으로 비교하는지"를 제목에 드러내고, 필요할 때만 상위 카테고리명을 덧붙이세요. 단일 카테고리명을 headline으로 쓰는 것은 그 항목이 실제 핵심 포인트일 때만 허용됩니다.
+- 출력 전 스스로 점검하세요: (1) 제목에 등장한 카테고리명이 실제 chart의 핵심 label과 일치하는가, (2) chart.dimension이 비교 축을 보존하는가, (3) chart.metric이 제목/goal의 지표 설명과 일치하는가.
 - header를 제외한 본문 섹션 수는 2~5개를 기본 범위로 생각하되, 데이터 복잡도에 따라 조정하세요.
 - 첫 본문 섹션이 반드시 hero chart-group일 필요는 없지만, 가장 강한 메시지를 가장 먼저 전달하세요.
 - 섹션 순서는 차트 비교 흐름이 자연스럽게 읽히도록 구성하세요.
@@ -1366,7 +1544,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
               : null
           );
       const structureResponse = rawGrid
-        ? await runStructureAnalysis(apiKey, selectedLayoutModel, serializeRawGridForGemini(rawGrid))
+        ? await runStructureAnalysis(apiKey, selectedLayoutModel, serializeRawGridForGemini(rawGrid), currentTableData)
         : { sheetStructure: buildInitialSheetStructure(session.fileName, currentTableData) };
       const structureValidation = rawGrid
         ? validateSheetStructure(structureResponse, rawGrid.rows)
