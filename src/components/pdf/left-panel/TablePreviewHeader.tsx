@@ -1,7 +1,7 @@
 import { FileSpreadsheet, Menu } from "lucide-react";
 import type { TableData } from "@/lib/table-utils";
 
-interface TablePreviewToolbarProps {
+interface TablePreviewHeaderProps {
   resolvedFileName: string;
   metadataFileName: string;
   hasRawGrid: boolean;
@@ -21,7 +21,7 @@ interface TablePreviewToolbarProps {
   onOpenSidebar?: () => void;
 }
 
-export function TablePreviewToolbar({
+export function TablePreviewHeader({
   resolvedFileName,
   metadataFileName,
   hasRawGrid,
@@ -39,7 +39,7 @@ export function TablePreviewToolbar({
   onResetTableEdits,
   onApplyTableEdits,
   onOpenSidebar,
-}: TablePreviewToolbarProps) {
+}: TablePreviewHeaderProps) {
   return (
     <div className="shrink-0 border-b border-gray-200/60 bg-white/90 backdrop-blur-sm">
       <div className="px-4 py-4 flex items-start gap-3">

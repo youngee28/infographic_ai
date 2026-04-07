@@ -1,4 +1,4 @@
-interface TablePreviewGridProps {
+interface TablePreviewBodyProps {
   viewMode: "raw" | "normalized";
   previewColumns: string[];
   previewRows: string[][];
@@ -8,7 +8,7 @@ interface TablePreviewGridProps {
   onHeaderChange?: (tableId: string, columnIndex: number, value: string) => void;
 }
 
-export function TablePreviewGrid({
+export function TablePreviewBody({
   viewMode,
   previewColumns,
   previewRows,
@@ -16,7 +16,7 @@ export function TablePreviewGrid({
   activeLogicalTableId,
   onCellChange,
   onHeaderChange,
-}: TablePreviewGridProps) {
+}: TablePreviewBodyProps) {
   return (
     <div className="min-w-max p-4">
       <table className="min-w-full border-separate border-spacing-0 overflow-hidden rounded-xl border border-gray-200/70 bg-white shadow-sm">

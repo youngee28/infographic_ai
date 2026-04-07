@@ -1,4 +1,4 @@
-import { resolveSelectedLayoutPlan } from "@/lib/layout-plan";
+import { resolveSelectedLayoutPlan } from "@/components/pdf/right-panel/layout/selection";
 import type { AnalysisData, LayoutPlan } from "@/lib/session-types";
 import {
   getAnalysisTitle,

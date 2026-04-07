@@ -14,7 +14,7 @@ import {
   type LayoutModel,
   type QnaModel,
 } from "@/lib/ai-models";
-import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
+import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-image-prompts";
 import type { Message } from "@/lib/store";
 
 interface AppStoreState {

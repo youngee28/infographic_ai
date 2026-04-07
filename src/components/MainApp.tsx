@@ -3,18 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Menu, Sparkles } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { buildLayoutTableBriefs, hasReadyLayoutBriefInputs } from "@/components/pdf/right-panel/layout/briefs";
+import { buildDeterministicLayoutPlans } from "@/components/pdf/right-panel/layout/planner";
+import { canonicalizeLayoutPlans, getSelectedLayoutPlan } from "@/components/pdf/right-panel/layout/selection";
 import { useAppStore } from "@/lib/app-store";
 import { normalizeAnalysisData } from "@/lib/analysis-schema";
 import { mergeTableInterpretations, validateSheetStructure } from "@/lib/analysis-pipeline";
 import { buildChartRecommendationsForLogicalTables, rerankLayoutPlansByRecommendations } from "@/lib/chart-recommendation";
-import {
-  buildDeterministicLayoutPlans,
-  buildLayoutTableBriefs,
-  canonicalizeLayoutPlans,
-  getSelectedLayoutPlan,
-  hasReadyLayoutBriefInputs,
-} from "@/lib/layout-plan";
-import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
+import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-image-prompts";
 import { buildLogicalTableIdAliasMap, resolveLogicalTableId, resolveLogicalTableIds } from "@/lib/table-id-resolution";
 import { store, type TableSession } from "@/lib/store";
 import type {

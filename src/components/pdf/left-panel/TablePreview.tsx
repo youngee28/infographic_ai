@@ -4,8 +4,8 @@ import { useMemo, useState } from "react";
 import type { RawSheetGrid, SummaryVariant } from "@/lib/session-types";
 import { getEditableLogicalTable, type TableData } from "@/lib/table-utils";
 import { TablePreviewEmptyState } from "./TablePreviewEmptyState";
-import { TablePreviewGrid } from "./TablePreviewGrid";
-import { TablePreviewToolbar } from "./TablePreviewToolbar";
+import { TablePreviewBody } from "./TablePreviewBody";
+import { TablePreviewHeader } from "./TablePreviewHeader";
 
 function columnIndexToExcelLabel(index: number): string {
   let current = index;
@@ -92,7 +92,7 @@ export function TablePreview({
 
   return (
     <div className="h-full bg-white rounded-2xl border border-gray-200/60 shadow-lg overflow-hidden flex flex-col relative z-10">
-      <TablePreviewToolbar
+      <TablePreviewHeader
         resolvedFileName={resolvedFileName}
         metadataFileName={metadataFileName}
         hasRawGrid={hasRawGrid}
@@ -113,7 +113,7 @@ export function TablePreview({
       />
 
       <div className="flex-1 min-h-0 overflow-auto bg-white">
-        <TablePreviewGrid
+        <TablePreviewBody
           viewMode={viewMode}
           previewColumns={previewColumns}
           previewRows={previewRows}
