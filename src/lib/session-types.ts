@@ -90,7 +90,6 @@ export interface TableInterpretationResult {
   implications: NarrativeItem[];
   insight?: string;
   significantNumbers?: string[];
-  layoutPlans?: LayoutPlan[];
   infographicPrompt?: string;
 }
 
@@ -389,9 +388,6 @@ export interface AnalysisData {
   issues: string | ReferenceLine[];
   selectedSourceTableIds?: string[];
   chartRecommendations?: ChartRecommendation[];
-  generatedLayoutPlans?: LayoutPlan[];
-  selectedLayoutPlanId?: string;
-  generatedLayoutPlan?: LayoutPlan;
   layoutPlan?: LayoutPlan;
   generatedInfographicPrompt?: string;
   infographicPrompt?: string;

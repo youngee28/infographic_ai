@@ -293,7 +293,6 @@ export const tableInterpretationResultSchema = z.object({
   implications: z.array(narrativeItemSchema).default([]),
   insight: z.string().trim().optional(),
   significantNumbers: z.array(z.string().trim().min(1)).default([]),
-  layoutPlans: z.array(layoutPlanSchema).optional(),
   infographicPrompt: z.string().trim().optional(),
 });
 
@@ -498,45 +497,6 @@ function normalizeLegacyLayoutPlan(value: unknown, fallbackId = "layout-option-1
   };
 }
 
-function normalizeLegacyLayoutPlans(value: unknown): z.infer<typeof layoutPlanSchema>[] | undefined {
-  const candidates = Array.isArray(value) ? value : value ? [value] : [];
-  const plans = candidates
-    .map((candidate, index) => normalizeLegacyLayoutPlan(candidate, `layout-option-${index + 1}`))
-    .filter((plan): plan is z.infer<typeof layoutPlanSchema> => plan !== undefined);
-  return plans.length > 0 ? plans : undefined;
-}
-
-function resolvePreferredLayoutPlan(
-  layoutPlan: z.infer<typeof layoutPlanSchema> | undefined,
-  generatedLayoutPlan: z.infer<typeof layoutPlanSchema> | undefined,
-  generatedLayoutPlans: z.infer<typeof layoutPlanSchema>[] | undefined,
-  selectedLayoutPlanId?: string
-): z.infer<typeof layoutPlanSchema> | undefined {
-  if (layoutPlan) {
-    return layoutPlan;
-  }
-
-  if (generatedLayoutPlans && generatedLayoutPlans.length > 0) {
-    if (selectedLayoutPlanId) {
-      const selectedLayoutPlan = generatedLayoutPlans.find((plan) => plan.id === selectedLayoutPlanId);
-      if (selectedLayoutPlan) {
-        return selectedLayoutPlan;
-      }
-    }
-
-    if (generatedLayoutPlan) {
-      const matchingGeneratedPlan = generatedLayoutPlans.find((plan) => plan.id === generatedLayoutPlan.id);
-      if (matchingGeneratedPlan) {
-        return matchingGeneratedPlan;
-      }
-    }
-
-    return generatedLayoutPlans[0];
-  }
-
-  return generatedLayoutPlan;
-}
-
 export const normalizedTableSchema = z.object({
   sheetName: z.string().optional(),
   columns: z.array(z.string()).default([]),
@@ -641,9 +601,6 @@ export const analysisDataSchema = z.object({
   issues: z.union([z.string(), z.array(referenceLineSchema)]).default(""),
   selectedSourceTableIds: z.array(z.string().trim().min(1)).optional(),
   chartRecommendations: z.array(chartRecommendationSchema).optional(),
-  generatedLayoutPlans: z.preprocess((value) => normalizeLegacyLayoutPlans(value), z.array(layoutPlanSchema).optional()),
-  selectedLayoutPlanId: z.string().trim().optional(),
-  generatedLayoutPlan: z.preprocess((value) => normalizeLegacyLayoutPlan(value), layoutPlanSchema.optional()),
   layoutPlan: z.preprocess((value) => normalizeLegacyLayoutPlan(value), layoutPlanSchema.optional()),
   generatedInfographicPrompt: z.string().optional(),
   infographicPrompt: z.string().optional(),
@@ -959,18 +916,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
     const rawTableContext = typeof raw?.tableContext === "string" ? raw.tableContext : "";
     const rawStatus = raw?.status === "pending" || raw?.status === "complete" ? raw.status : undefined;
     const hasContent = Boolean(rawTitle || rawTableContext || rawTableData?.success);
-    const fallbackGeneratedLayoutPlans = normalizeLegacyLayoutPlans(raw?.generatedLayoutPlans);
-    const fallbackGeneratedLayoutPlan = normalizeLegacyLayoutPlan(raw?.generatedLayoutPlan);
     const fallbackLayoutPlan = normalizeLegacyLayoutPlan(raw?.layoutPlan);
-    const fallbackSelectedLayoutPlanId = typeof raw?.selectedLayoutPlanId === "string" && raw.selectedLayoutPlanId.trim().length > 0
-      ? raw.selectedLayoutPlanId.trim()
-      : undefined;
-    const preferredFallbackLayoutPlan = resolvePreferredLayoutPlan(
-      fallbackLayoutPlan,
-      fallbackGeneratedLayoutPlan,
-      fallbackGeneratedLayoutPlans,
-      fallbackSelectedLayoutPlanId
-    );
     const fallbackTableCount = rawSheetStructure?.success
       ? rawSheetStructure.data.tableCount
       : rawTableData?.success
@@ -1099,10 +1045,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
         ? raw.selectedSourceTableIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
         : undefined,
       chartRecommendations: undefined,
-      generatedLayoutPlans: fallbackGeneratedLayoutPlans,
-      selectedLayoutPlanId: fallbackSelectedLayoutPlanId,
-      generatedLayoutPlan: fallbackGeneratedLayoutPlan,
-      layoutPlan: preferredFallbackLayoutPlan,
+      layoutPlan: fallbackLayoutPlan,
       generatedInfographicPrompt: "",
       infographicPrompt: "",
       tableContext: rawTableContext,
@@ -1140,13 +1083,6 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
   const normalizedIssues = Array.isArray(data.issues)
     ? data.issues.map((line) => ({ text: line.text, pages: dedupePages(line.pages) }))
     : data.issues;
-  const preferredLayoutPlan = resolvePreferredLayoutPlan(
-    data.layoutPlan,
-    data.generatedLayoutPlan,
-    data.generatedLayoutPlans,
-    data.selectedLayoutPlanId
-  );
-
   return {
       schemaVersion: "3",
       title,
@@ -1261,10 +1197,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
         ? compactUnique(data.selectedSourceTableIds)
         : undefined,
     chartRecommendations: data.chartRecommendations,
-    generatedLayoutPlans: data.generatedLayoutPlans,
-    selectedLayoutPlanId: data.selectedLayoutPlanId,
-    generatedLayoutPlan: data.generatedLayoutPlan,
-    layoutPlan: preferredLayoutPlan,
+    layoutPlan: data.layoutPlan,
     generatedInfographicPrompt: data.generatedInfographicPrompt ?? visualizationBrief?.prompt,
     infographicPrompt: data.infographicPrompt ?? visualizationBrief?.prompt,
     tableContext: data.tableContext,

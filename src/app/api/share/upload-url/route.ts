@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createPdfUploadPresignedUrl } from "@/lib/s3";
+import { createSharedSessionUploadPresignedUrl } from "@/lib/s3";
 
 const requestSchema = z.object({
   sessionId: z.string().min(1),
@@ -13,7 +13,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "잘못된 요청 형식입니다." }, { status: 400 });
     }
 
-    const { objectKey, uploadUrl } = await createPdfUploadPresignedUrl({
+    const { objectKey, uploadUrl } = await createSharedSessionUploadPresignedUrl({
       sessionId: parsed.data.sessionId,
     });
 

@@ -90,28 +90,7 @@ export function getS3BucketName(): string {
   return bucket;
 }
 
-export async function uploadPdfBase64ToS3(params: {
-  sessionId: string;
-  pdfBase64: string;
-}): Promise<string> {
-  const objectKey = `shared-sessions/${params.sessionId}/source.pdf`;
-  const body = Buffer.from(params.pdfBase64, "base64");
-
-  await sendWithS3Client((client) =>
-    client.send(
-      new PutObjectCommand({
-        Bucket: getS3BucketName(),
-        Key: objectKey,
-        Body: body,
-        ContentType: "application/pdf",
-      })
-    )
-  );
-
-  return objectKey;
-}
-
-export async function createPdfUploadPresignedUrl(params: {
+export async function createSharedSessionUploadPresignedUrl(params: {
   sessionId: string;
   expiresInSeconds?: number;
 }): Promise<{ objectKey: string; uploadUrl: string }> {
@@ -129,7 +108,7 @@ export async function createPdfUploadPresignedUrl(params: {
   return { objectKey, uploadUrl };
 }
 
-export async function getPdfBase64FromS3(objectKey: string): Promise<string> {
+export async function getSharedSessionFileBase64FromS3(objectKey: string): Promise<string> {
   const result = await sendWithS3Client((client) =>
     client.send(
       new GetObjectCommand({
@@ -140,6 +119,6 @@ export async function getPdfBase64FromS3(objectKey: string): Promise<string> {
   );
 
   const bytes = await result.Body?.transformToByteArray();
-  if (!bytes) throw new Error("S3 PDF 파일을 읽을 수 없습니다.");
+  if (!bytes) throw new Error("S3 공유 원본 파일을 읽을 수 없습니다.");
   return Buffer.from(bytes).toString("base64");
 }

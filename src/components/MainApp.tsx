@@ -7,7 +7,6 @@ import { buildDeterministicLayoutPlans, buildPlannerInput, hasReadyPlannerInputs
 import {
   buildAnalysisWithSingleLayoutPlan,
   canonicalizeLayoutPlan,
-  canonicalizeLayoutPlans,
   resolveSelectedLayoutPlan,
 } from "@/components/pdf/right-panel/layout/selection";
 import { useAppStore } from "@/lib/app-store";
@@ -516,7 +515,6 @@ ${modeInstructions}
   "implications": [{ "text": "실무 시사점", "sourceTableIds": ["${table.id}"], "evidence": [], "audience": "business" }],
   "insight": "표 맥락을 반영한 짧은 인사이트 1문장",
   "significantNumbers": ["LOCAL_FACTS에 있는 비교/비중/변화량을 근거로 한 문장 1", "LOCAL_FACTS에 있는 비교/비중/변화량을 근거로 한 문장 2"],
-  "layoutPlans": [],
   "infographicPrompt": "이 표를 인포그래픽으로 요약하는 프롬프트"
 }
 
@@ -572,9 +570,6 @@ function createPendingAnalysis(fileName: string, tableData: TableData): Analysis
       issues: "",
       selectedSourceTableIds: getSelectedSourceTableIds(tableData),
       chartRecommendations: buildChartRecommendationsForLogicalTables(tableData),
-      generatedLayoutPlans: undefined,
-      selectedLayoutPlanId: undefined,
-      generatedLayoutPlan: undefined,
       layoutPlan: undefined,
       generatedInfographicPrompt: "",
       infographicPrompt: "",
@@ -676,9 +671,6 @@ function createUnsupportedAnalysis(fileName: string): AnalysisData {
       insights: "",
       issues: "새 CSV 또는 XLSX 파일로 다시 업로드하면 왼쪽 표 미리보기와 오른쪽 인포그래픽 인터페이스를 사용할 수 있습니다.",
       chartRecommendations: undefined,
-      generatedLayoutPlans: undefined,
-      selectedLayoutPlanId: undefined,
-      generatedLayoutPlan: undefined,
       layoutPlan: undefined,
       generatedInfographicPrompt: "",
       infographicPrompt: "",
@@ -721,9 +713,6 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
       ? source.chartRecommendations
       : pending.chartRecommendations,
     title: source.title?.trim() || pending.title,
-    generatedLayoutPlans: undefined,
-    selectedLayoutPlanId: undefined,
-    generatedLayoutPlan: undefined,
     layoutPlan: resolveSelectedLayoutPlan(source) ?? pending.layoutPlan,
     generatedInfographicPrompt:
       source.generatedInfographicPrompt?.trim() || source.infographicPrompt?.trim() || pending.generatedInfographicPrompt,
@@ -1207,19 +1196,14 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
       if (plannerInput.tables.length === 0) {
         throw new Error("Planner inputs are empty.");
       }
-      const generatedLayoutPlans = canonicalizeLayoutPlans(
-        buildDeterministicLayoutPlans(plannerInput),
+      const nextLayoutPlan = canonicalizeLayoutPlan(
+        buildDeterministicLayoutPlans(plannerInput)[0],
         tableIdAliases
       );
-      const normalizedLayoutPlans = rerankLayoutPlansByRecommendations(
-        generatedLayoutPlans ??
-          merged.generatedLayoutPlans ??
-          baseAnalysis.generatedLayoutPlans ??
-          (baseAnalysis.generatedLayoutPlan ? [baseAnalysis.generatedLayoutPlan] : baseAnalysis.layoutPlan ? [baseAnalysis.layoutPlan] : undefined),
+      const selectedLayoutPlan = rerankLayoutPlansByRecommendations(
+        nextLayoutPlan ? [nextLayoutPlan] : undefined,
         chartRecommendations
-      );
-      const selectedLayoutPlan = normalizedLayoutPlans?.[0]
-        ?? canonicalizeLayoutPlan(resolveSelectedLayoutPlan({ ...baseAnalysis, ...merged }), tableIdAliases);
+      )?.[0] ?? canonicalizeLayoutPlan(resolveSelectedLayoutPlan({ ...baseAnalysis, ...merged }), tableIdAliases);
       const generatedInfographicPrompt = options?.imagePromptOverride?.trim() || merged.infographicPrompt || baseAnalysis.generatedInfographicPrompt || baseAnalysis.infographicPrompt || layoutImagePromptInstruction;
       const rawAnalysis = buildAnalysisWithSingleLayoutPlan({
         ...baseAnalysis,

@@ -13,7 +13,7 @@ const requestSchema = z.object({
     annotations: z.array(z.unknown()).optional(),
     createdAt: z.number(),
   }),
-  pdfS3Key: z.string().min(1),
+  sourceFileKey: z.string().min(1),
   password: z.string().min(1),
   chatLimitTotal: z.number().int().min(0).max(200),
 });
@@ -25,7 +25,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "잘못된 요청 형식입니다." }, { status: 400 });
     }
 
-    const { session, pdfS3Key, password, chatLimitTotal } = parsed.data;
+    const { session, sourceFileKey, password, chatLimitTotal } = parsed.data;
     const publicId = randomUUID();
     const normalizedAnalysisData = session.analysisData ? normalizeAnalysisData(session.analysisData, session.fileName) : null;
 
@@ -33,7 +33,7 @@ export async function POST(req: Request) {
       id: randomUUID(),
       public_id: publicId,
       password,
-      pdf_s3_key: pdfS3Key,
+      pdf_s3_key: sourceFileKey,
       payload: {
         fileName: session.fileName,
         analysisData: normalizedAnalysisData,

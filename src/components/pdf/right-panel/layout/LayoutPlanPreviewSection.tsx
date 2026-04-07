@@ -1,29 +1,51 @@
 import type { ReactNode } from "react";
-import type { PreviewMode } from "./LayoutPlanPreview";
+import type { AnalysisData, LayoutPlan } from "@/lib/session-types";
+import { LayoutPlanPreview, type PreviewMode } from "./LayoutPlanPreview";
+import type { PreviewDataRegistry } from "./layout-preview-data";
+
+interface LayoutPlanPreviewRendererProps {
+  plan: LayoutPlan;
+  analysisData: AnalysisData | null;
+  previewDataContext: PreviewDataRegistry;
+}
+
+function getLayoutIntentPresentation(layoutIntent?: string | null) {
+  const normalized = layoutIntent?.trim();
+  return normalized ? `Intent · ${normalized}` : undefined;
+}
+
+function hasRecognizedSectionRole(role?: string | null): boolean {
+  const normalized = role?.trim().toUpperCase();
+  return normalized === "HOOK" || normalized === "EVIDENCE" || normalized === "CONTEXT" || normalized === "CONCLUSION";
+}
 
 interface LayoutPlanPreviewSectionProps {
+  plan: LayoutPlan;
+  analysisData: AnalysisData | null;
+  previewDataContext: PreviewDataRegistry;
   previewMode: PreviewMode;
-  planName: string;
-  description: string;
-  layoutIntentLabel?: string;
-  chartSectionCount: number;
-  roleTagCount: number;
   isGeneratingPreview: boolean;
-  preview: ReactNode;
+  renderHtmlPreview: (props: LayoutPlanPreviewRendererProps) => ReactNode;
+  renderFallbackPreview: (props: LayoutPlanPreviewRendererProps) => ReactNode;
   onPreviewModeSelect: (mode: PreviewMode) => void;
 }
 
 export function LayoutPlanPreviewSection({
+  plan,
+  analysisData,
+  previewDataContext,
   previewMode,
-  planName,
-  description,
-  layoutIntentLabel,
-  chartSectionCount,
-  roleTagCount,
   isGeneratingPreview,
-  preview,
+  renderHtmlPreview,
+  renderFallbackPreview,
   onPreviewModeSelect,
 }: LayoutPlanPreviewSectionProps) {
+  const planName = plan.name || "시안";
+  const description = plan.description || "저장된 레이아웃 시안";
+  const layoutIntentLabel = getLayoutIntentPresentation(plan.layoutIntent);
+  const chartSectionCount = plan.sections.filter((section) => section.type === "chart-group").length;
+  const roleTagCount = plan.sections.filter((section) => hasRecognizedSectionRole(section.sectionRole)).length;
+
   return (
     <section className="rounded-[28px] border border-gray-200/80 bg-white p-4 shadow-sm md:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -83,7 +105,13 @@ export function LayoutPlanPreviewSection({
           )}
         </div>
 
-        {preview}
+        <LayoutPlanPreview
+          previewMode={previewMode}
+          candidateName={planName}
+          previewImageDataUrl={plan.previewImageDataUrl}
+          htmlPreview={renderHtmlPreview({ plan, analysisData, previewDataContext })}
+          fallbackPreview={renderFallbackPreview({ plan, analysisData, previewDataContext })}
+        />
       </div>
     </section>
   );
