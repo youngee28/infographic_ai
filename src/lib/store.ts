@@ -10,23 +10,7 @@ export interface Message {
   generatedImageDataUrl?: string;
 }
 
-export interface AnnotationMessage {
-  role: "user" | "ai";
-  content: string;
-  citations?: number[];
-  generatedImageDataUrl?: string;
-}
-
-export interface Annotation {
-  id: string; // unique uuid for the annotation
-  position: { x: number; y: number; width: number; height: number; pageNumber: number }; // Absolute position normalized to scale 1.0 (PDF coordinate system)
-  imageOriginBase64: string; // The base64 crop image to be sent to Gemini
-  messages: AnnotationMessage[]; // Mini-chat conversation related to this crop
-  createdAt: number;
-}
-
 export type { TableSession };
-export type PdfSession = TableSession;
 
 // Ensure localforage uses IndexedDB, but only on the client side
 if (typeof window !== "undefined") {

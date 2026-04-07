@@ -90,12 +90,8 @@ export function ShareSessionClient({ publicId }: ShareSessionClientProps) {
       <PanelGroup autoSaveId="table-share-panel-layout" direction="horizontal" className="h-full w-full rounded-2xl overflow-hidden border border-gray-200/60 bg-white">
         <Panel defaultSize={60} minSize={30} className="relative z-10">
           <LeftPanel
-            fileUrl={fileUrl}
-            sessionId={sharedSessionId}
-            pageNumber={pageNumber}
             analysisData={analysisData}
             rawFileName={fileName}
-            onPageChange={setPageNumber}
           />
         </Panel>
 

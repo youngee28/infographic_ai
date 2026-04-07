@@ -1,3 +1,4 @@
+import { resolveSelectedLayoutPlan } from "@/lib/layout-plan";
 import type { AnalysisData, LayoutPlan } from "@/lib/session-types";
 import {
   getAnalysisTitle,
@@ -30,12 +31,7 @@ interface GeminiGenerateContentResultLike {
 }
 
 export function getSelectedLayoutPlan(analysisData?: AnalysisData | null): LayoutPlan | undefined {
-  if (!analysisData) return undefined;
-  const candidates = analysisData.generatedLayoutPlans;
-  if (candidates && candidates.length > 0) {
-    return candidates.find((candidate) => candidate.id === analysisData.selectedLayoutPlanId) ?? candidates[0];
-  }
-  return analysisData.layoutPlan ?? analysisData.generatedLayoutPlan;
+  return resolveSelectedLayoutPlan(analysisData);
 }
 
 export function buildInfographicContext(analysisData?: AnalysisData | null, promptOverride?: string) {
@@ -79,7 +75,7 @@ export function buildInfographicContext(analysisData?: AnalysisData | null, prom
     getAnalysisTitle(analysisData) ? `데이터셋 제목: ${getAnalysisTitle(analysisData)}` : "",
     analysisData.dataset?.summary ? `데이터셋 요약: ${analysisData.dataset.summary}` : "",
     scopedTables.length > 0 ? `표 구성: ${scopedTables.map((table) => `${table.name}(${table.role})`).join(" | ")}` : "",
-    layoutPlanContext ? `확정된 레이아웃 계획:\n${layoutPlanContext}` : "",
+    layoutPlanContext ? `앱이 계산한 레이아웃 계획:\n${layoutPlanContext}` : "",
     findings.length > 0 ? `핵심 신호: ${findings.slice(0, 6).join(" | ")}` : "",
     implications.length > 0 ? `실무 시사점: ${implications.slice(0, 4).join(" | ")}` : "",
     cautions.length > 0 ? `주의 포인트: ${cautions.slice(0, 4).join(" | ")}` : "",

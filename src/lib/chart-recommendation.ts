@@ -1,4 +1,5 @@
-import type { ChartRecommendation, LayoutPlan, LayoutSection, NormalizedTable } from "@/lib/session-types";
+import type { ChartRecommendation, LayoutChartSpec, LayoutPlan, LayoutSection, NormalizedTable } from "@/lib/session-types";
+import { buildLayoutAxisMetadata } from "@/lib/table-utils";
 
 type InferredColumnKind = "number" | "percent" | "currency" | "date" | "boolean" | "id" | "text";
 type CardinalityBucket = "low" | "medium" | "high";
@@ -328,6 +329,168 @@ function sanitizePromptValue(value: string): string {
 
 function getPlanCharts(plan: LayoutPlan): NonNullable<LayoutSection["charts"]> {
   return plan.sections.flatMap((section) => section.charts ?? []);
+}
+
+function normalizeFieldName(value?: string): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function hasNamedColumn(columns: string[], name?: string): boolean {
+  const normalizedTarget = normalizeFieldName(name);
+  if (!normalizedTarget) return false;
+  return columns.some((column) => normalizeFieldName(column) === normalizedTarget);
+}
+
+function hasMatchingRowHeader(table: Pick<NormalizedTable, "rows">, name?: string): boolean {
+  const normalizedTarget = normalizeFieldName(name);
+  if (!normalizedTarget) return false;
+  return table.rows.some((row) => {
+    const firstCell = typeof row[0] === "string" ? row[0] : "";
+    return normalizeFieldName(firstCell) === normalizedTarget;
+  });
+}
+
+function resolvePlanChartTableId(
+  chart: LayoutChartSpec,
+  section: LayoutSection,
+  tableData: Pick<NormalizedTable, "logicalTables" | "primaryLogicalTableId">,
+  selectedTableIds?: string[]
+): string | undefined {
+  if (chart.tableId?.trim()) {
+    return chart.tableId.trim();
+  }
+
+  if ((section.sourceTableIds?.length ?? 0) === 1) {
+    return section.sourceTableIds?.[0];
+  }
+
+  if ((selectedTableIds?.length ?? 0) === 1) {
+    return selectedTableIds?.[0];
+  }
+
+  if ((tableData.logicalTables?.length ?? 0) === 1) {
+    return tableData.logicalTables?.[0]?.id;
+  }
+
+  return tableData.primaryLogicalTableId;
+}
+
+function isChartSemanticallyCompatible(
+  chart: LayoutChartSpec,
+  section: LayoutSection,
+  table: Pick<NormalizedTable, "columns" | "rows" | "rowCount" | "columnCount">,
+  selectedTableIds?: string[]
+): boolean {
+  const selectedTableIdSet = selectedTableIds ? new Set(selectedTableIds) : null;
+  if (selectedTableIdSet && chart.tableId && !selectedTableIdSet.has(chart.tableId)) {
+    return false;
+  }
+
+  const profiles = profileColumns(table.columns, table.rows);
+  const dimensionProfiles = rankDimensionCandidates(profiles)
+    .map((candidate) => profiles.find((profile) => profile.name === candidate.name))
+    .filter((profile): profile is ColumnProfile => Boolean(profile));
+  const axisMetadata = buildLayoutAxisMetadata(table);
+  const hasDimensionColumn = hasNamedColumn(table.columns, chart.dimension);
+  const hasMetricColumn = hasNamedColumn(table.columns, chart.metric);
+  const hasMetricRowLabel = hasMatchingRowHeader(table, chart.metric);
+  const dimensionProfile = chart.dimension
+    ? profiles.find((profile) => normalizeFieldName(profile.name) === normalizeFieldName(chart.dimension))
+    : undefined;
+
+  if (chart.chartType !== "line") {
+    if (chart.metric && !hasMetricColumn) {
+      return false;
+    }
+    if (chart.dimension && !hasDimensionColumn) {
+      return false;
+    }
+  } else {
+    const metricResolvable = chart.metric ? (hasMetricColumn || hasMetricRowLabel) : true;
+    const dimensionResolvable = chart.dimension ? hasDimensionColumn || axisMetadata.timeAxisLikelyIn !== "none" : axisMetadata.timeAxisLikelyIn !== "none";
+    if (!metricResolvable || !dimensionResolvable) {
+      return false;
+    }
+  }
+
+  if (chart.chartType === "map") {
+    return Boolean(chart.dimension && hasDimensionColumn && isHeaderHint(chart.dimension, MAP_HEADER_HINTS));
+  }
+
+  if (chart.chartType === "pie" || chart.chartType === "donut") {
+    return Boolean(
+      chart.dimension &&
+      chart.metric &&
+      hasDimensionColumn &&
+      hasMetricColumn &&
+      dimensionProfile &&
+      dimensionProfile.cardinality === "low" &&
+      dimensionProfile.distinctCount <= 8
+    );
+  }
+
+  if (chart.chartType === "stacked-bar") {
+    const hasSplitDimension = dimensionProfiles.some((profile) => {
+      const normalizedName = normalizeFieldName(profile.name);
+      return normalizedName !== normalizeFieldName(chart.dimension) && normalizedName !== normalizeFieldName(chart.metric) && profile.cardinality === "low";
+    });
+
+    return Boolean(chart.dimension && chart.metric && hasDimensionColumn && hasMetricColumn && hasSplitDimension);
+  }
+
+  if (chart.chartType === "line") {
+    return axisMetadata.timeAxisLikelyIn !== "none";
+  }
+
+  return true;
+}
+
+export function filterSemanticallyCompatibleLayoutPlans(
+  plans: LayoutPlan[] | undefined,
+  params: {
+    tableData: Pick<NormalizedTable, "columns" | "rows" | "rowCount" | "columnCount" | "logicalTables" | "primaryLogicalTableId">;
+    selectedTableIds?: string[];
+  }
+): LayoutPlan[] | undefined {
+  if (!plans || plans.length === 0) {
+    return plans;
+  }
+
+  const logicalTables = params.tableData.logicalTables ?? [];
+  const tableById = new Map(logicalTables.map((table) => [table.id, table]));
+  const defaultTable = logicalTables[0] ?? params.tableData;
+  const filteredPlans = plans
+    .map((plan) => {
+      const sections = plan.sections.flatMap((section) => {
+        if (!section.charts || section.charts.length === 0) {
+          return [section];
+        }
+
+        const charts = section.charts.flatMap((chart) => {
+          const resolvedTableId = resolvePlanChartTableId(chart, section, params.tableData, params.selectedTableIds);
+          const resolvedTable = resolvedTableId ? tableById.get(resolvedTableId) : undefined;
+          const nextChart = resolvedTableId ? { ...chart, tableId: resolvedTableId } : chart;
+
+          if (!isChartSemanticallyCompatible(nextChart, section, resolvedTable ?? defaultTable, params.selectedTableIds)) {
+            return [];
+          }
+
+          return [nextChart];
+        });
+
+        if (charts.length === 0) {
+          return [];
+        }
+
+        return [{ ...section, charts }];
+      });
+
+      const hasRenderableCharts = sections.some((section) => (section.charts?.length ?? 0) > 0);
+      return hasRenderableCharts ? { ...plan, sections } : undefined;
+    })
+    .filter((plan): plan is LayoutPlan => Boolean(plan));
+
+  return filteredPlans.length > 0 ? filteredPlans : undefined;
 }
 
 export function buildChartRecommendationPromptContext(recommendations?: ChartRecommendation[]): string {

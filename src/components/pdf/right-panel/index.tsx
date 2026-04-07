@@ -14,7 +14,7 @@ interface RightPanelProps {
   isAnalyzing?: boolean;
   sessionId?: string | null;
   fileName?: string;
-  onRegenerateLayoutCandidates?: (layoutPromptOverride: string, selectedSourceTableIds?: string[]) => Promise<void>;
+  onRebuildLayoutPlans?: (imagePromptOverride: string) => Promise<void>;
   onCitationClick?: (page: number) => void;
   onShareSession?: () => void;
   showImageTab?: boolean;
@@ -29,7 +29,7 @@ export function RightPanel({
   isAnalyzing,
   sessionId,
   fileName,
-  onRegenerateLayoutCandidates,
+  onRebuildLayoutPlans,
   onCitationClick,
   onShareSession,
   showImageTab = true,
@@ -76,7 +76,7 @@ export function RightPanel({
             sessionId={sessionId}
             analysisData={analysisData}
             isAnalyzing={isAnalyzing}
-            onRegenerateLayoutCandidates={onRegenerateLayoutCandidates}
+            onRebuildLayoutPlans={onRebuildLayoutPlans}
           />
         ) : (
           <InsightsPanel

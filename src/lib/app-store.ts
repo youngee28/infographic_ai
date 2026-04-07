@@ -15,7 +15,7 @@ import {
   type QnaModel,
 } from "@/lib/ai-models";
 import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
-import type { Annotation, Message } from "@/lib/store";
+import type { Message } from "@/lib/store";
 
 interface AppStoreState {
   fileUrl: string | null;
@@ -33,7 +33,6 @@ interface AppStoreState {
   selectedImageModel: ImageModel;
   layoutSystemPrompt: string;
   chatMessagesBySession: Record<string, Message[]>;
-  annotationsBySession: Record<string, Annotation[]>;
   setFileUrl: (fileUrl: string | null) => void;
   setIsAnalyzing: (isAnalyzing: boolean) => void;
   setAnalysisData: (analysisData: AnalysisData | null) => void;
@@ -49,7 +48,6 @@ interface AppStoreState {
   setSelectedImageModel: (model: ImageModel) => void;
   setLayoutSystemPrompt: (prompt: string) => void;
   setChatMessagesForSession: (sessionId: string, messages: Message[]) => void;
-  setAnnotationsForSession: (sessionId: string, annotations: Annotation[]) => void;
   resetViewState: () => void;
 }
 
@@ -72,7 +70,6 @@ export const useAppStore = create<AppStoreState>()(
         selectedImageModel: DEFAULT_IMAGE_MODEL,
         layoutSystemPrompt: DEFAULT_LAYOUT_SYSTEM_PROMPT,
         chatMessagesBySession: {},
-        annotationsBySession: {},
         setFileUrl: (fileUrl) => set({ fileUrl }, false, "app/setFileUrl"),
         setIsAnalyzing: (isAnalyzing) => set({ isAnalyzing }, false, "app/setIsAnalyzing"),
         setAnalysisData: (analysisData) => set({ analysisData }, false, "app/setAnalysisData"),
@@ -93,12 +90,6 @@ export const useAppStore = create<AppStoreState>()(
             chatMessagesBySession[sessionId] = messages;
             return { chatMessagesBySession };
           }, false, "app/setChatMessagesForSession"),
-        setAnnotationsForSession: (sessionId, annotations) =>
-          set((state) => {
-            const annotationsBySession = { ...state.annotationsBySession };
-            annotationsBySession[sessionId] = annotations;
-            return { annotationsBySession };
-          }, false, "app/setAnnotationsForSession"),
         resetViewState: () =>
           set(
             {
@@ -127,7 +118,6 @@ export const useAppStore = create<AppStoreState>()(
           // - sessions (IndexedDB에만 저장)
           // - analysisData (IndexedDB에만 저장)
           // - chatMessagesBySession (IndexedDB에만 저장, 여기는 캐시만)
-          // - annotationsBySession (IndexedDB에만 저장, 여기는 캐시만)
         }),
       }
     )

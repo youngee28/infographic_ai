@@ -1,6 +1,11 @@
 import { z } from "zod";
-import { buildLogicalTableIdAliasMap, resolveLogicalTableIds } from "@/lib/table-id-resolution";
+import { buildLogicalTableIdAliasMap, resolveLogicalTableId, resolveLogicalTableIds } from "@/lib/table-id-resolution";
 import type { AnalysisData } from "@/lib/session-types";
+import { rebaseLogicalTableGeometry, resolveTableFieldRoles } from "@/lib/table-utils";
+
+function hasStoredFieldRoles(dimensions?: string[], metrics?: string[]): boolean {
+  return (dimensions?.length ?? 0) > 0 || (metrics?.length ?? 0) > 0;
+}
 
 export const chartRecommendationSchema = z.object({
   tableId: z.string().trim().optional(),
@@ -287,6 +292,8 @@ export const tableInterpretationResultSchema = z.object({
   findings: z.array(narrativeItemSchema).default([]),
   implications: z.array(narrativeItemSchema).default([]),
   cautions: z.array(narrativeItemSchema).default([]),
+  insight: z.string().trim().optional(),
+  significantNumbers: z.array(z.string().trim().min(1)).default([]),
   layoutPlans: z.array(layoutPlanSchema).optional(),
   infographicPrompt: z.string().trim().optional(),
 });
@@ -631,20 +638,6 @@ export const infographicControlsSchema = z.object({
   emphasis: z.enum(["visual", "balanced", "text"]).optional(),
 });
 
-export const annotationSchema = z.object({
-  id: z.string(),
-  position: z.object({
-    x: z.number(),
-    y: z.number(),
-    width: z.number(),
-    height: z.number(),
-    pageNumber: z.number().int().positive(),
-  }),
-  imageOriginBase64: z.string(),
-  messages: z.array(messageSchema).default([]),
-  createdAt: z.number(),
-});
-
 export const tableSessionSchema = z.object({
   id: z.string(),
   fileName: z.string(),
@@ -664,7 +657,6 @@ export const tableSessionSchema = z.object({
     )
     .optional(),
   infographicControls: infographicControlsSchema.optional(),
-  annotations: z.array(annotationSchema).optional(),
   createdAt: z.number(),
 });
 
@@ -705,43 +697,67 @@ function narrativeLines(items: Array<{ text: string; evidence: Array<{ pages: nu
     .filter((item) => item.text.trim().length > 0);
 }
 
+function formatDerivedHeaderSummary(
+  axis: "row" | "column" | "mixed" | "ambiguous",
+  headerRows?: number[],
+  headerCols?: number[]
+): string {
+  if (axis === "mixed") {
+    return `행 헤더 ${headerRows?.join(", ") || "-"}, 열 헤더 ${headerCols?.join(", ") || "-"}`;
+  }
+  if (axis === "row") {
+    return `헤더 행 ${headerRows?.join(", ") || "-"}`;
+  }
+  if (axis === "column") {
+    return `헤더 열 ${headerCols?.join(", ") || "-"}`;
+  }
+  return "헤더 축이 불명확함";
+}
+
 function deriveSourceInventory(data: z.infer<typeof analysisDataSchema>, title: string) {
   if (data.sheetStructure?.tables.length) {
+    const tableIdAliases = buildLogicalTableIdAliasMap({
+      tableData: data.tableData,
+      sheetStructure: data.sheetStructure,
+      sourceTables: data.sourceInventory?.tables,
+    });
     const primaryStructuredTableId = data.visualizationBrief?.primaryTableId ?? data.sheetStructure.tables[0]?.id;
-    const structuredTables = data.sheetStructure.tables.map((table, index) => ({
-      id: table.id,
-      name: table.title,
-      role: table.id === primaryStructuredTableId ? "primary" as const : table.structure === "column-major" ? "reference" as const : "supporting" as const,
-      purpose:
-        table.structure === "mixed"
-          ? "행과 열 헤더가 혼합된 표 구조를 파악"
-          : table.structure === "column-major"
-            ? "열 방향 표 구조 파악"
-            : table.structure === "ambiguous"
-              ? "구조가 애매한 표 후보 검토"
-              : "행 방향 표 구조 파악",
-      context: `${table.range.startRow}-${table.range.endRow}행, ${table.range.startCol}-${table.range.endCol}열 범위의 구조화 표입니다.`,
-      dimensions: table.dimensions,
-      metrics: table.metrics,
-      grain: table.structure,
-      keyTakeaway: table.id === primaryStructuredTableId ? data.summaries[0]?.lines?.[0]?.text : undefined,
-      structure: table.structure,
-      rangeLabel: `R${table.range.startRow}-R${table.range.endRow} / C${table.range.startCol}-C${table.range.endCol}`,
-      headerSummary:
-        table.header.axis === "mixed"
-          ? `행 헤더 ${table.header.headerRows?.join(", ") || "-"}, 열 헤더 ${table.header.headerCols?.join(", ") || "-"}`
-          : table.header.axis === "row"
-            ? `헤더 행 ${table.header.headerRows?.join(", ") || "-"}`
-            : table.header.axis === "column"
-              ? `헤더 열 ${table.header.headerCols?.join(", ") || "-"}`
-              : "헤더 축이 불명확함",
-    }));
+    const structuredTables = data.sheetStructure.tables.map((table) => {
+      const resolvedId = resolveLogicalTableId(table.id, tableIdAliases) ?? table.id;
+      const matchingLogicalTable = data.tableData?.logicalTables?.find((candidate) => candidate.id === resolvedId);
+      const fieldRoles = hasStoredFieldRoles(table.dimensions, table.metrics)
+        ? { dimensions: table.dimensions, metrics: table.metrics }
+        : matchingLogicalTable
+          ? resolveTableFieldRoles(matchingLogicalTable)
+          : { dimensions: table.dimensions, metrics: table.metrics };
+      return {
+        id: table.id,
+        name: table.title,
+        role: table.id === primaryStructuredTableId ? "primary" as const : table.structure === "column-major" ? "reference" as const : "supporting" as const,
+        purpose:
+          table.structure === "mixed"
+            ? "행과 열 헤더가 혼합된 표 구조를 파악"
+            : table.structure === "column-major"
+              ? "열 방향 표 구조 파악"
+              : table.structure === "ambiguous"
+                ? "구조가 애매한 표 후보 검토"
+                : "행 방향 표 구조 파악",
+        context: `${table.range.startRow}-${table.range.endRow}행, ${table.range.startCol}-${table.range.endCol}열 범위의 구조화 표입니다.`,
+        dimensions: fieldRoles.dimensions,
+        metrics: fieldRoles.metrics,
+        grain: table.structure,
+        keyTakeaway: table.id === primaryStructuredTableId ? data.summaries[0]?.lines?.[0]?.text : undefined,
+        structure: table.structure,
+        rangeLabel: `R${table.range.startRow}-R${table.range.endRow} / C${table.range.startCol}-C${table.range.endCol}`,
+        headerSummary: formatDerivedHeaderSummary(table.header.axis, table.header.headerRows, table.header.headerCols),
+      };
+    });
 
     return {
       tables: data.sourceInventory?.tables.length
         ? structuredTables.map((table) => {
             const existing = data.sourceInventory?.tables.find((candidate) => candidate.id === table.id);
-            return existing ? { ...table, ...existing, id: table.id } : table;
+            return existing ? { ...existing, ...table, id: table.id } : table;
           })
         : structuredTables,
       relations: data.sourceInventory?.relations ?? [],
@@ -754,24 +770,38 @@ function deriveSourceInventory(data: z.infer<typeof analysisDataSchema>, title: 
 
   const primaryLogicalTableId = data.tableData.primaryLogicalTableId ?? data.tableData.logicalTables?.[0]?.id;
   const derivedLogicalTables = data.tableData.logicalTables && data.tableData.logicalTables.length > 0
-    ? data.tableData.logicalTables.map((table) => ({
-        id: table.id,
-        name: table.name,
-        role: table.id === primaryLogicalTableId
-          ? "primary" as const
-          : table.orientation === "column-major"
-            ? "reference" as const
-            : "supporting" as const,
-        purpose: table.orientation === "column-major" ? "열 방향 표 구조 파악" : "행 방향 표 구조 파악",
-        context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열 범위의 논리 표입니다.`,
-        dimensions: table.columns.slice(0, 2),
-        metrics: table.columns.slice(2),
-        grain: table.orientation,
-        keyTakeaway: table.id === primaryLogicalTableId ? data.summaries[0]?.lines?.[0]?.text : undefined,
-        structure: table.orientation,
-        rangeLabel: `R${table.startRow}-R${table.endRow} / C${table.startCol}-C${table.endCol}`,
-        headerSummary: table.headerAxis === "row" ? "헤더 행 기준" : table.headerAxis === "column" ? "헤더 열 기준" : "헤더 축이 불명확함",
-      }))
+    ? data.tableData.logicalTables.map((table) => {
+        const normalizedStructure = table.localStructureHint?.winner ?? table.orientation;
+        const fieldRoles = resolveTableFieldRoles(table);
+        return {
+          id: table.id,
+          name: table.name,
+          role: table.id === primaryLogicalTableId
+            ? "primary" as const
+            : normalizedStructure === "column-major"
+              ? "reference" as const
+              : "supporting" as const,
+          purpose: normalizedStructure === "mixed"
+            ? "행과 열 헤더가 혼합된 표 구조 파악"
+            : normalizedStructure === "column-major"
+              ? "열 방향 표 구조 파악"
+              : normalizedStructure === "ambiguous"
+                ? "구조가 애매한 표 후보 검토"
+                : "행 방향 표 구조 파악",
+          context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열 범위의 논리 표입니다.`,
+          dimensions: fieldRoles.dimensions,
+          metrics: fieldRoles.metrics,
+          grain: normalizedStructure,
+          keyTakeaway: table.id === primaryLogicalTableId ? data.summaries[0]?.lines?.[0]?.text : undefined,
+          structure: normalizedStructure,
+          rangeLabel: `R${table.startRow}-R${table.endRow} / C${table.startCol}-C${table.endCol}`,
+          headerSummary: formatDerivedHeaderSummary(
+            table.localStructureHint?.headerAxis ?? (table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous"),
+            table.localStructureHint?.headerRows,
+            table.localStructureHint?.headerCols
+          ),
+        };
+      })
     : null;
 
   if (data.sourceInventory?.tables.length) {
@@ -779,7 +809,7 @@ function deriveSourceInventory(data: z.infer<typeof analysisDataSchema>, title: 
       tables: derivedLogicalTables
         ? derivedLogicalTables.map((table) => {
             const existing = data.sourceInventory?.tables.find((candidate) => candidate.id === table.id);
-            return existing ? { ...table, ...existing, id: table.id } : table;
+            return existing ? { ...existing, ...table, id: table.id } : table;
           })
         : data.sourceInventory.tables,
       relations: data.sourceInventory.relations,
@@ -790,17 +820,25 @@ function deriveSourceInventory(data: z.infer<typeof analysisDataSchema>, title: 
     tables: [
       ...(derivedLogicalTables
         ? derivedLogicalTables
-        : [{
+        : [(() => {
+            const fieldRoles = resolveTableFieldRoles({
+              columns: data.tableData.columns,
+              rows: data.tableData.rows,
+              rowCount: data.tableData.rowCount,
+              columnCount: data.tableData.columnCount,
+            });
+            return {
             id: "table-1",
             name: data.tableData.sheetName?.trim() || title,
             role: "primary" as const,
             purpose: "핵심 데이터 구조 파악",
             context: data.tableContext?.trim() || "업로드된 표의 핵심 구조와 수치를 해석하기 위한 기본 표입니다.",
-            dimensions: data.tableData.columns.slice(0, 2),
-            metrics: data.tableData.columns.slice(2),
+            dimensions: fieldRoles.dimensions,
+            metrics: fieldRoles.metrics,
             grain: data.tableData.sheetName ? "sheet" : undefined,
             keyTakeaway: data.summaries[0]?.lines?.[0]?.text,
-          }]),
+            };
+          })()]),
     ],
     relations: [],
   };
@@ -918,75 +956,99 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
         ? {
             sheetName: rawTableData.data.sheetName,
             tableCount: rawTableData.data.logicalTables?.length ?? (rawTableData.data.rowCount > 0 ? 1 : 0),
-            tables: rawTableData.data.logicalTables?.map((table) => ({
-              id: table.id,
-              title: table.name,
-              structure: table.localStructureHint?.winner ?? table.orientation,
-              confidence: table.localStructureHint?.confidence ?? table.confidence,
-              range: {
-                startRow: table.startRow,
-                endRow: table.endRow,
-                startCol: table.startCol,
-                endCol: table.endCol,
-              },
-              header: {
-                axis: table.localStructureHint?.headerAxis ?? (table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous"),
-                headerRows: table.localStructureHint?.headerRows,
-                headerCols: table.localStructureHint?.headerCols,
-              },
-              dataRegion: table.localStructureHint?.dataRegion,
-              dimensions: table.columns.slice(0, 2),
-              metrics: table.columns.slice(2),
-              notes: table.normalizationNotes,
-              candidates: table.localStructureHint?.candidates?.map((candidate) => ({
+            tables: rawTableData.data.logicalTables?.map((table) => {
+              const fieldRoles = resolveTableFieldRoles(table);
+              const geometry = rebaseLogicalTableGeometry(table);
+              return {
+                id: table.id,
+                title: table.name,
+                structure: table.localStructureHint?.winner ?? table.orientation,
+                confidence: table.localStructureHint?.confidence ?? table.confidence,
                 range: {
                   startRow: table.startRow,
                   endRow: table.endRow,
                   startCol: table.startCol,
                   endCol: table.endCol,
                 },
-                structure: candidate.structure,
-                confidence: candidate.confidence,
-                reason: candidate.reason,
-              })),
-              reviewReasons: table.localStructureHint?.reviewReasons,
-              needsReview: (table.localStructureHint?.reviewReasons?.length ?? 0) > 0,
-            })) ?? (rawTableData.data.rowCount > 0 ? [{
-              id: "table-1",
-              title: rawTableData.data.sheetName?.trim() || rawTitle,
-              structure: "ambiguous" as const,
-              confidence: 0.4,
-              range: { startRow: 1, endRow: Math.max(1, rawTableData.data.rowCount + 1), startCol: 1, endCol: Math.max(1, rawTableData.data.columnCount) },
-              header: { axis: "ambiguous" as const },
-              dimensions: rawTableData.data.columns.slice(0, 2),
-              metrics: rawTableData.data.columns.slice(2),
-            }] : []),
+                header: {
+                  axis: table.localStructureHint?.headerAxis ?? (table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous"),
+                  headerRows: geometry.headerRows,
+                  headerCols: geometry.headerCols,
+                },
+                dataRegion: geometry.dataRegion,
+                dimensions: fieldRoles.dimensions,
+                metrics: fieldRoles.metrics,
+                notes: table.normalizationNotes,
+                candidates: table.localStructureHint?.candidates?.map((candidate) => ({
+                  range: {
+                    startRow: table.startRow,
+                    endRow: table.endRow,
+                    startCol: table.startCol,
+                    endCol: table.endCol,
+                  },
+                  structure: candidate.structure,
+                  confidence: candidate.confidence,
+                  reason: candidate.reason,
+                })),
+                reviewReasons: table.localStructureHint?.reviewReasons,
+                needsReview: (table.localStructureHint?.reviewReasons?.length ?? 0) > 0,
+              };
+            }) ?? (rawTableData.data.rowCount > 0 ? [(() => {
+              const fieldRoles = resolveTableFieldRoles({
+                columns: rawTableData.data.columns,
+                rows: rawTableData.data.rows,
+                rowCount: rawTableData.data.rowCount,
+                columnCount: rawTableData.data.columnCount,
+              });
+              return {
+                id: "table-1",
+                title: rawTableData.data.sheetName?.trim() || rawTitle,
+                structure: "ambiguous" as const,
+                confidence: 0.4,
+                range: { startRow: 1, endRow: Math.max(1, rawTableData.data.rowCount + 1), startCol: 1, endCol: Math.max(1, rawTableData.data.columnCount) },
+                header: { axis: "ambiguous" as const },
+                dimensions: fieldRoles.dimensions,
+                metrics: fieldRoles.metrics,
+              };
+            })()] : []),
           }
         : undefined,
       sourceInventory: {
         tables: rawTableData?.success
           ? rawTableData.data.logicalTables && rawTableData.data.logicalTables.length > 0
-            ? rawTableData.data.logicalTables.map((table) => ({
-                id: table.id,
-                name: table.name,
-                role: table.id === (rawTableData.data.primaryLogicalTableId ?? rawTableData.data.logicalTables?.[0]?.id) ? "primary" : table.orientation === "column-major" ? "reference" : "supporting",
-                purpose: (table.localStructureHint?.winner ?? table.orientation) === "mixed" ? "행과 열 헤더가 혼합된 표 구조 파악" : table.orientation === "column-major" ? "열 방향 표 구조 파악" : "행 방향 표 구조 파악",
-                context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열 범위의 논리 표입니다.`,
-                dimensions: table.columns.slice(0, 2),
-                metrics: table.columns.slice(2),
-                grain: table.localStructureHint?.winner ?? table.orientation,
-                structure: table.localStructureHint?.winner ?? table.orientation,
-              }))
-            : [{
-                id: "table-1",
-                name: rawTableData.data.sheetName?.trim() || rawTitle,
-                role: "primary",
-                purpose: "핵심 데이터 구조 파악",
-                context: rawTableContext || "업로드된 표의 핵심 구조와 수치를 해석하기 위한 기본 표입니다.",
-                dimensions: rawTableData.data.columns.slice(0, 2),
-                metrics: rawTableData.data.columns.slice(2),
-                grain: rawTableData.data.sheetName ? "sheet" : undefined,
-              }]
+            ? rawTableData.data.logicalTables.map((table) => {
+                const normalizedStructure = table.localStructureHint?.winner ?? table.orientation;
+                const fieldRoles = resolveTableFieldRoles(table);
+                return {
+                  id: table.id,
+                  name: table.name,
+                  role: table.id === (rawTableData.data.primaryLogicalTableId ?? rawTableData.data.logicalTables?.[0]?.id) ? "primary" : normalizedStructure === "column-major" ? "reference" : "supporting",
+                  purpose: normalizedStructure === "mixed" ? "행과 열 헤더가 혼합된 표 구조 파악" : normalizedStructure === "column-major" ? "열 방향 표 구조 파악" : normalizedStructure === "ambiguous" ? "구조가 애매한 표 후보 검토" : "행 방향 표 구조 파악",
+                  context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열 범위의 논리 표입니다.`,
+                  dimensions: fieldRoles.dimensions,
+                  metrics: fieldRoles.metrics,
+                  grain: normalizedStructure,
+                  structure: normalizedStructure,
+                };
+              })
+            : [(() => {
+                const fieldRoles = resolveTableFieldRoles({
+                  columns: rawTableData.data.columns,
+                  rows: rawTableData.data.rows,
+                  rowCount: rawTableData.data.rowCount,
+                  columnCount: rawTableData.data.columnCount,
+                });
+                return {
+                  id: "table-1",
+                  name: rawTableData.data.sheetName?.trim() || rawTitle,
+                  role: "primary",
+                  purpose: "핵심 데이터 구조 파악",
+                  context: rawTableContext || "업로드된 표의 핵심 구조와 수치를 해석하기 위한 기본 표입니다.",
+                  dimensions: fieldRoles.dimensions,
+                  metrics: fieldRoles.metrics,
+                  grain: rawTableData.data.sheetName ? "sheet" : undefined,
+                };
+              })()]
           : [],
         relations: [],
       },
@@ -1058,53 +1120,83 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       tableCount: Math.max(data.dataset?.tableCount ?? 0, sourceInventory.tables.length),
         sourceType: data.dataset?.sourceType ?? data.tableData?.sourceType,
       },
-      sheetStructure: data.sheetStructure ?? (data.tableData
+      sheetStructure: data.sheetStructure
+        ? {
+            ...data.sheetStructure,
+            tables: data.sheetStructure.tables.map((table) => {
+              const resolvedId = resolveLogicalTableId(table.id, tableIdAliases) ?? table.id;
+              const matchingLogicalTable = data.tableData?.logicalTables?.find((candidate) => candidate.id === resolvedId);
+               const fieldRoles = hasStoredFieldRoles(table.dimensions, table.metrics)
+                 ? { dimensions: table.dimensions, metrics: table.metrics }
+                 : matchingLogicalTable
+                   ? resolveTableFieldRoles(matchingLogicalTable)
+                   : { dimensions: table.dimensions, metrics: table.metrics };
+              return {
+                ...table,
+                dimensions: fieldRoles.dimensions,
+                metrics: fieldRoles.metrics,
+              };
+            }),
+          }
+        : (data.tableData
         ? {
             sheetName: data.tableData.sheetName,
             tableCount: data.tableData.logicalTables?.length ?? (data.tableData.rowCount > 0 ? 1 : 0),
-            tables: data.tableData.logicalTables?.map((table) => ({
-              id: table.id,
-              title: table.name,
-              structure: table.localStructureHint?.winner ?? table.orientation,
-              confidence: table.localStructureHint?.confidence ?? table.confidence,
-              range: {
-                startRow: table.startRow,
-                endRow: table.endRow,
-                startCol: table.startCol,
-                endCol: table.endCol,
-              },
-              header: {
-                axis: table.localStructureHint?.headerAxis ?? (table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous"),
-                headerRows: table.localStructureHint?.headerRows,
-                headerCols: table.localStructureHint?.headerCols,
-              },
-              dataRegion: table.localStructureHint?.dataRegion,
-              dimensions: table.columns.slice(0, 2),
-              metrics: table.columns.slice(2),
-              notes: table.normalizationNotes,
-              candidates: table.localStructureHint?.candidates?.map((candidate) => ({
+            tables: data.tableData.logicalTables?.map((table) => {
+              const fieldRoles = resolveTableFieldRoles(table);
+              const geometry = rebaseLogicalTableGeometry(table);
+              return {
+                id: table.id,
+                title: table.name,
+                structure: table.localStructureHint?.winner ?? table.orientation,
+                confidence: table.localStructureHint?.confidence ?? table.confidence,
                 range: {
                   startRow: table.startRow,
                   endRow: table.endRow,
                   startCol: table.startCol,
                   endCol: table.endCol,
                 },
-                structure: candidate.structure,
-                confidence: candidate.confidence,
-                reason: candidate.reason,
-              })),
-              reviewReasons: table.localStructureHint?.reviewReasons,
-              needsReview: (table.localStructureHint?.reviewReasons?.length ?? 0) > 0,
-            })) ?? [{
-              id: "table-1",
-              title,
-              structure: "ambiguous" as const,
-              confidence: 0.4,
-              range: { startRow: 1, endRow: Math.max(1, data.tableData.rowCount + 1), startCol: 1, endCol: Math.max(1, data.tableData.columnCount) },
-              header: { axis: "ambiguous" as const },
-              dimensions: data.tableData.columns.slice(0, 2),
-              metrics: data.tableData.columns.slice(2),
-            }],
+                header: {
+                  axis: table.localStructureHint?.headerAxis ?? (table.headerAxis === "row" ? "row" : table.headerAxis === "column" ? "column" : "ambiguous"),
+                  headerRows: geometry.headerRows,
+                  headerCols: geometry.headerCols,
+                },
+                dataRegion: geometry.dataRegion,
+                dimensions: fieldRoles.dimensions,
+                metrics: fieldRoles.metrics,
+                notes: table.normalizationNotes,
+                candidates: table.localStructureHint?.candidates?.map((candidate) => ({
+                  range: {
+                    startRow: table.startRow,
+                    endRow: table.endRow,
+                    startCol: table.startCol,
+                    endCol: table.endCol,
+                  },
+                  structure: candidate.structure,
+                  confidence: candidate.confidence,
+                  reason: candidate.reason,
+                })),
+                reviewReasons: table.localStructureHint?.reviewReasons,
+                needsReview: (table.localStructureHint?.reviewReasons?.length ?? 0) > 0,
+              };
+            }) ?? [(() => {
+              const fieldRoles = resolveTableFieldRoles({
+                columns: data.tableData.columns,
+                rows: data.tableData.rows,
+                rowCount: data.tableData.rowCount,
+                columnCount: data.tableData.columnCount,
+              });
+              return {
+                id: "table-1",
+                title,
+                structure: "ambiguous" as const,
+                confidence: 0.4,
+                range: { startRow: 1, endRow: Math.max(1, data.tableData.rowCount + 1), startCol: 1, endCol: Math.max(1, data.tableData.columnCount) },
+                header: { axis: "ambiguous" as const },
+                dimensions: fieldRoles.dimensions,
+                metrics: fieldRoles.metrics,
+              };
+            })()],
           }
         : undefined),
       sourceInventory,

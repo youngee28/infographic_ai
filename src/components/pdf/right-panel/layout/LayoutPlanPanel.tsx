@@ -26,6 +26,7 @@ import { buildInfographicContext, extractGeneratedImageResult } from "@/lib/info
 import { buildLayoutTreeFromPlan, projectLayoutPlanFromTree, reorderLayoutTreeRoots, updateLayoutTreeBlock } from "@/lib/layout-tree";
 import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-prompts";
 import { store } from "@/lib/store";
+import { buildLayoutAxisMetadata } from "@/lib/table-utils";
 import { buildLogicalTableIdAliasMap } from "@/lib/table-id-resolution";
 import type {
   AnalysisData,
@@ -149,6 +150,9 @@ interface PreviewDataContext {
   primaryMetricIndex: number;
   primaryDimensionIndex: number;
   secondaryDimensionIndex: number;
+  headerAxisHint: "row" | "column" | "mixed" | "ambiguous";
+  timeAxisLikelyIn: "rows" | "columns" | "ambiguous" | "none";
+  categoryAxisLikelyIn: "rows" | "columns" | "ambiguous" | "none";
 }
 
 interface PreviewDataRegistry {
@@ -315,7 +319,7 @@ interface LayoutPlanPanelProps {
   sessionId?: string | null;
   analysisData: AnalysisData | null;
   isAnalyzing?: boolean;
-  onRegenerateLayoutCandidates?: (layoutPromptOverride: string, selectedSourceTableIds?: string[]) => Promise<void>;
+  onRebuildLayoutPlans?: (imagePromptOverride: string) => Promise<void>;
 }
 
 function cloneLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | null {
@@ -514,15 +518,12 @@ function buildFallbackLayoutPlans(analysisData: AnalysisData | null): LayoutPlan
 function resolveLayoutPlans(analysisData: AnalysisData | null): LayoutPlan[] {
   const candidates = analysisData?.generatedLayoutPlans;
   if (candidates && candidates.length > 0) {
-    const primaryCandidate = candidates[0];
-    return [
-      {
-        ...primaryCandidate,
-        id: primaryCandidate.id || "layout-option-1",
-        name: primaryCandidate.name || "시안",
-        description: primaryCandidate.description || "구성 전략이 반영된 대시보드 시안",
-      },
-    ];
+    return candidates.map((candidate, index) => ({
+      ...candidate,
+      id: candidate.id || `layout-option-${index + 1}`,
+      name: candidate.name || `시안 ${index + 1}`,
+      description: candidate.description || "구성 전략이 반영된 대시보드 시안",
+    }));
   }
 
   const legacy = analysisData?.layoutPlan ?? analysisData?.generatedLayoutPlan;
@@ -532,7 +533,7 @@ function resolveLayoutPlans(analysisData: AnalysisData | null): LayoutPlan[] {
         ...legacy,
         id: legacy.id || "layout-option-1",
         name: legacy.name || "시안",
-        description: legacy.description || "기존 레이아웃 시안",
+        description: legacy.description || "저장된 레이아웃 시안",
       },
     ];
   }
@@ -564,7 +565,7 @@ function buildAnalysisWithLayoutCandidates(
   };
 }
 
-export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegenerateLayoutCandidates }: LayoutPlanPanelProps) {
+export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRebuildLayoutPlans }: LayoutPlanPanelProps) {
   const setAnalysisData = useAppStore((s) => s.setAnalysisData);
   const layoutSystemPrompt = useAppStore((s) => s.layoutSystemPrompt);
   const setLayoutSystemPrompt = useAppStore((s) => s.setLayoutSystemPrompt);
@@ -675,17 +676,17 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
     const normalizedPrompt = promptDraft.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
     setLayoutSystemPrompt(normalizedPrompt);
 
-    if (!sessionId || !onRegenerateLayoutCandidates) {
+    if (!sessionId || !onRebuildLayoutPlans) {
       return;
     }
 
     setIsSubmittingPrompt(true);
     try {
-      await onRegenerateLayoutCandidates(normalizedPrompt, selectedSourceTableIds);
+      await onRebuildLayoutPlans(normalizedPrompt);
     } finally {
       setIsSubmittingPrompt(false);
     }
-  }, [onRegenerateLayoutCandidates, promptDraft, selectedSourceTableIds, sessionId, setLayoutSystemPrompt]);
+  }, [onRebuildLayoutPlans, promptDraft, sessionId, setLayoutSystemPrompt]);
 
   useEffect(() => {
     if (previewMode !== "image" || !analysisData || analysisData.status === "pending" || candidates.length === 0) {
@@ -728,7 +729,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
           const previewPrompt = `${buildInfographicContext(previewAnalysisData, promptOverride)}
 
 이 이미지는 레이아웃 후보 선택용 미리보기입니다.
-위 확정된 layoutPlan을 최우선으로 따라 인포그래픽을 생성하세요. 섹션 순서, 차트 유형, KPI 블록, 정보 비중 정책은 유지하고, 후보 카드에서 한눈에 비교할 수 있게 전체 구성과 시각적 위계를 뚜렷하게 표현하세요.
+위 앱이 계산한 layoutPlan을 최우선으로 따라 인포그래픽을 생성하세요. 섹션 순서, 차트 유형, KPI 블록, 정보 비중 정책은 유지하고, 후보 카드에서 한눈에 비교할 수 있게 전체 구성과 시각적 위계를 뚜렷하게 표현하세요.
 설명 텍스트보다 이미지 생성이 우선이며, 흰 배경의 깔끔한 데이터 인포그래픽 시안으로 출력하세요.`;
 
           const imageResult = await ai.models.generateContent({
@@ -774,14 +775,14 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
       <div className="flex h-full items-center justify-center bg-white">
         <div className="flex flex-col items-center gap-4 text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-          <p className="text-sm font-medium text-gray-500 animate-pulse">AI가 레이아웃 시안을 생성하고 있습니다...</p>
+          <p className="text-sm font-medium text-gray-500 animate-pulse">분석 결과로 레이아웃을 다시 계산하고 있습니다...</p>
         </div>
       </div>
     );
   }
 
   if (!selectedPlan) {
-    return <div className="flex h-full items-center justify-center bg-white px-6 text-center text-sm text-gray-500">현재 세션에는 레이아웃 시안이 없습니다.</div>;
+    return <div className="flex h-full items-center justify-center bg-white px-6 text-center text-sm text-gray-500">현재 세션에는 계산된 레이아웃이 없습니다.</div>;
   }
 
   return (
@@ -791,9 +792,9 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
           <section className="rounded-[28px] border border-gray-200/80 bg-white p-4 shadow-sm md:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Layout System Prompt</p>
-                <h3 className="mt-1 text-sm font-semibold text-gray-900">레이아웃 생성 지침</h3>
-                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">이 프롬프트가 Gemini의 layoutPlan 생성에 직접 들어갑니다. 저장 후 다시 분석하면 새 시안에 반영됩니다.</p>
+                <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Image Direction</p>
+                <h3 className="mt-1 text-sm font-semibold text-gray-900">이미지 생성 보조 지침</h3>
+                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">레이아웃 구조는 앱이 분석 결과로 자동 계산합니다. 아래 지침은 인포그래픽 이미지 생성 시 연출 방향을 보강할 때 사용됩니다.</p>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -811,7 +812,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
                   disabled={isSubmittingPrompt || isAnalyzing}
                   className="inline-flex items-center rounded-full border border-blue-600 bg-blue-600 px-3 py-1.5 text-[11px] font-medium text-white shadow-sm transition-colors hover:bg-blue-700"
                 >
-                  {isSubmittingPrompt || isAnalyzing ? "새 시안 생성 중..." : "새 시안 생성"}
+                  {isSubmittingPrompt || isAnalyzing ? "다시 계산 중..." : "저장 후 다시 계산"}
                 </button>
               </div>
             </div>
@@ -820,7 +821,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
               value={promptDraft}
               onChange={(event) => setPromptDraft(event.target.value)}
               rows={3}
-              placeholder="레이아웃 시안 생성 규칙을 입력하세요"
+              placeholder="이미지 생성 시 추가로 반영할 연출 지침을 입력하세요"
               className="mt-4 min-h-[96px] w-full resize-y rounded-2xl border border-gray-200 bg-gray-50/70 px-4 py-3 text-[12.5px] leading-relaxed text-gray-700 outline-none transition-colors placeholder:text-gray-400 focus:border-blue-500 focus:bg-white"
             />
 
@@ -829,7 +830,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Source Tables</p>
-                    <p className="mt-1 text-[12px] leading-relaxed text-gray-600">레이아웃에 사용할 표를 여러 개 선택하세요. 선택된 표를 조합해서 하나의 시안을 만듭니다.</p>
+                    <p className="mt-1 text-[12px] leading-relaxed text-gray-600">선택한 표는 저장되며, 다시 계산할 때 레이아웃과 이미지 문맥에 우선 반영됩니다.</p>
                   </div>
                   <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[10.5px] font-medium text-gray-500">{selectedSourceTableIds.length}개 선택</span>
                 </div>
@@ -858,8 +859,8 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Layout Plan</p>
-                <h3 className="mt-1 text-sm font-semibold text-gray-900">AI 레이아웃 시안</h3>
-                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">기본값인 HTML 모드에서는 layoutPlan JSON의 제목·설명·sections를 읽기 전용 HTML로 렌더링합니다. 후보 카드 안에서는 드래그/리사이즈 편집 레이어를 노출하지 않고, 이미지 모드는 기존 생성 경로를 그대로 사용합니다.</p>
+                <h3 className="mt-1 text-sm font-semibold text-gray-900">앱 계산 레이아웃</h3>
+                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">HTML 모드에서는 앱이 계산한 layoutPlan의 제목·설명·sections를 읽기 전용으로 렌더링합니다. 이미지 모드에서는 같은 계획을 바탕으로 Gemini 미리보기를 생성합니다.</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="inline-flex items-center rounded-xl border border-gray-200/80 bg-gray-100/80 p-1 shadow-sm shadow-gray-100/80">
@@ -1014,6 +1015,11 @@ function parseDateOrder(value: string): number | null {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
+function isYearLikeLabel(value: string): boolean {
+  const normalized = value.trim();
+  return /(?:19|20)\d{2}/.test(normalized) || /(?:19|20)\d{2}\s*년/.test(normalized);
+}
+
 function formatPreviewNumber(value: number): string {
   if (!Number.isFinite(value)) return "-";
   if (Math.abs(value) >= 1000000) {
@@ -1022,7 +1028,15 @@ function formatPreviewNumber(value: number): string {
   return value.toLocaleString("ko-KR", { maximumFractionDigits: Math.abs(value) >= 100 ? 0 : 1 });
 }
 
-function createPreviewDataContext(columns: string[], rows: string[][]): PreviewDataContext {
+function createPreviewDataContext(
+  columns: string[],
+  rows: string[][],
+  hints?: {
+    headerAxis?: "row" | "column" | "mixed" | "ambiguous";
+    timeAxisLikelyIn?: "rows" | "columns" | "ambiguous" | "none";
+    categoryAxisLikelyIn?: "rows" | "columns" | "ambiguous" | "none";
+  }
+): PreviewDataContext {
   const profiles = columns.map<PreviewColumnProfile>((name, index) => {
     const values = rows.map((row) => normalizePreviewText(row[index]));
     const nonEmptyValues = values.filter(Boolean);
@@ -1090,6 +1104,10 @@ function createPreviewDataContext(columns: string[], rows: string[][]): PreviewD
       return scoreDimension(right) - scoreDimension(left) || left.index - right.index;
     });
 
+  const headerAxisHint = hints?.headerAxis ?? "ambiguous";
+  const timeAxisLikelyIn = hints?.timeAxisLikelyIn ?? "none";
+  const categoryAxisLikelyIn = hints?.categoryAxisLikelyIn ?? "ambiguous";
+
   return {
     columns,
     rows,
@@ -1097,17 +1115,35 @@ function createPreviewDataContext(columns: string[], rows: string[][]): PreviewD
     primaryMetricIndex,
     primaryDimensionIndex: orderedDimensions[0]?.index ?? -1,
     secondaryDimensionIndex: orderedDimensions.find((profile) => profile.distinctCount <= 8)?.index ?? orderedDimensions[1]?.index ?? -1,
+    headerAxisHint,
+    timeAxisLikelyIn,
+    categoryAxisLikelyIn,
   };
 }
 
 function buildPreviewDataRegistry(analysisData?: AnalysisData | null): PreviewDataRegistry {
-  const emptyContext = { columns: [], rows: [], profiles: [], primaryMetricIndex: -1, primaryDimensionIndex: -1, secondaryDimensionIndex: -1 };
+  const emptyContext: PreviewDataContext = {
+    columns: [],
+    rows: [],
+    profiles: [],
+    primaryMetricIndex: -1,
+    primaryDimensionIndex: -1,
+    secondaryDimensionIndex: -1,
+    headerAxisHint: "ambiguous",
+    timeAxisLikelyIn: "none",
+    categoryAxisLikelyIn: "none",
+  };
   const tableData = analysisData?.tableData;
   if (!tableData) {
     return { emptyContext, defaultContext: emptyContext, contextsByTableId: {} };
   }
 
-  const defaultContext = createPreviewDataContext(tableData.columns, tableData.rows);
+  const defaultAxisMetadata = buildLayoutAxisMetadata(tableData);
+  const defaultContext = createPreviewDataContext(tableData.columns, tableData.rows, {
+    headerAxis: defaultAxisMetadata.headerAxisHint,
+    timeAxisLikelyIn: defaultAxisMetadata.timeAxisLikelyIn,
+    categoryAxisLikelyIn: defaultAxisMetadata.categoryAxisLikelyIn,
+  });
   const aliases = buildLogicalTableIdAliasMap({
     tableData,
     sheetStructure: analysisData?.sheetStructure,
@@ -1116,7 +1152,12 @@ function buildPreviewDataRegistry(analysisData?: AnalysisData | null): PreviewDa
   const contextsByTableId: Record<string, PreviewDataContext> = {};
 
   for (const table of tableData.logicalTables ?? []) {
-    const context = createPreviewDataContext(table.columns, table.rows);
+    const axisMetadata = buildLayoutAxisMetadata(table);
+    const context = createPreviewDataContext(table.columns, table.rows, {
+      headerAxis: axisMetadata.headerAxisHint,
+      timeAxisLikelyIn: axisMetadata.timeAxisLikelyIn,
+      categoryAxisLikelyIn: axisMetadata.categoryAxisLikelyIn,
+    });
     contextsByTableId[table.id] = context;
   }
 
@@ -1195,6 +1236,72 @@ function resolveSplitDimensionIndex(context: PreviewDataContext, dimensionIndex:
       .sort((left, right) => left.distinctCount - right.distinctCount || left.index - right.index)
       .find((profile) => profile.distinctCount <= 8)?.index ?? -1
   );
+}
+
+function findMatchingRowIndex(context: PreviewDataContext, preferredName?: string): number {
+  const normalizedName = normalizePreviewKey(preferredName);
+  if (!normalizedName) return -1;
+  return context.rows.findIndex((row) => {
+    const label = normalizePreviewKey(row[0]);
+    return Boolean(label) && (label === normalizedName || label.includes(normalizedName) || normalizedName.includes(label));
+  });
+}
+
+function buildColumnTimeSeriesPreview(chart: LayoutChartSpec, context: PreviewDataContext): PreparedPreviewChart | null {
+  if (context.timeAxisLikelyIn !== "columns" || context.categoryAxisLikelyIn !== "rows" || context.columns.length < 2 || context.rows.length === 0) {
+    return null;
+  }
+
+  const timeColumns = context.columns
+    .map((label, index) => ({ label, index, order: parseDateOrder(label) }))
+    .filter((item) => item.index > 0 && (item.order !== null || isYearLikeLabel(item.label)));
+  if (timeColumns.length < 2) {
+    return null;
+  }
+
+  const orderedTimeColumns = timeColumns
+    .slice()
+    .sort((left, right) => (left.order ?? left.index) - (right.order ?? right.index) || left.index - right.index);
+  const matchedRowIndex = findMatchingRowIndex(context, chart.metric);
+  const viableRowIndexes = context.rows
+    .map((row, rowIndex) => ({
+      rowIndex,
+      hasNumericSeries: orderedTimeColumns.some((column) => parseMetricValue(normalizePreviewText(row[column.index])) !== null),
+    }))
+    .filter((item) => item.hasNumericSeries)
+    .map((item) => item.rowIndex);
+  const fallbackRowIndex = viableRowIndexes.length === 1 ? viableRowIndexes[0] : -1;
+  const rowIndex = matchedRowIndex >= 0 ? matchedRowIndex : fallbackRowIndex;
+  if (rowIndex < 0) {
+    return null;
+  }
+
+  const row = context.rows[rowIndex] ?? [];
+  const items = orderedTimeColumns
+    .map((column, order) => ({
+      label: column.label,
+      value: parseMetricValue(normalizePreviewText(row[column.index])) ?? Number.NaN,
+      order: column.order ?? order,
+    }))
+    .filter((item) => Number.isFinite(item.value));
+  if (items.length < 2) {
+    return null;
+  }
+
+  const metricLabel = normalizePreviewText(row[0]) || chart.metric || "metric";
+  return {
+    renderKind: "canvas",
+    chartType: chart.chartType,
+    canvasType: chart.chartType === "line" ? "line" : "bar",
+    title: chart.title,
+    goal: chart.goal,
+    dimensionLabel: chart.dimension ?? "연도",
+    metricLabel,
+    labels: items.map((item) => item.label),
+    values: items.map((item) => item.value),
+    items,
+    infoNote: `${metricLabel} 행을 시간축 기준으로 재구성한 미리보기`,
+  };
 }
 
 function aggregateByDimension(context: PreviewDataContext, dimensionIndex: number, metricIndex: number): AggregatedPreviewDatum[] {
@@ -1317,6 +1424,12 @@ function buildStackedPreviewChart(
 
 function buildPreparedPreviewChart(chart: LayoutChartSpec, registry: PreviewDataRegistry, sourceTableIds?: string[]): PreparedPreviewChart {
   const context = resolvePreviewDataContext(registry, chart.tableId, sourceTableIds);
+  if (chart.chartType === "line") {
+    const transposedPreview = buildColumnTimeSeriesPreview(chart, context);
+    if (transposedPreview) {
+      return transposedPreview;
+    }
+  }
   const metricIndex = resolveMetricIndex(context, chart.metric);
   const dimensionIndex = resolveDimensionIndex(context, chart.dimension, metricIndex);
 

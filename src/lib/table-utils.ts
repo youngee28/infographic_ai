@@ -59,6 +59,48 @@ export interface LayoutDataSnippet {
   dimensionSignals: LayoutDimensionSignal[];
 }
 
+export interface LayoutAxisMetadata {
+  orientationHint: LayoutDataSnippet["orientationHint"];
+  headerAxisHint: LayoutDataSnippet["headerAxisHint"];
+  timeAxisLikelyIn: LayoutDataSnippet["timeAxisLikelyIn"];
+  categoryAxisLikelyIn: LayoutDataSnippet["categoryAxisLikelyIn"];
+  columnHeaderContainsYear: LayoutDataSnippet["columnHeaderContainsYear"];
+  rowHeaderContainsYear: LayoutDataSnippet["rowHeaderContainsYear"];
+}
+
+export interface TableFieldRoles {
+  dimensions: string[];
+  metrics: string[];
+  confidence: number;
+  reasons: string[];
+}
+
+export type AITableOrientation = "row" | "column" | "both";
+
+export interface AITableFieldRoleField {
+  name: string;
+  role: "dimension" | "metric";
+  type: string;
+  index: number;
+}
+
+export interface AITableFieldRoleResult {
+  orientation: AITableOrientation;
+  fields: AITableFieldRoleField[];
+  confidence: number;
+}
+
+export interface DeriveTableFieldRolesWithAIOptions {
+  apiKey?: string;
+  model?: string;
+}
+
+export interface AbsoluteTableStructureGeometry {
+  headerRows?: number[];
+  headerCols?: number[];
+  dataRegion?: LogicalTableStructureHint["dataRegion"];
+}
+
 interface ParseTableOptions {
   apiKey?: string;
 }
@@ -86,6 +128,62 @@ interface LocalStructureAssessment {
   dataRegion?: LogicalTableStructureHint["dataRegion"];
   candidates?: LogicalTableStructureHint["candidates"];
   reviewReasons?: string[];
+}
+
+const LOCAL_STRUCTURE_MIN_CONFIDENCE = 0.55;
+const LOCAL_STRUCTURE_MIN_MARGIN = 0.1;
+const MIXED_STRUCTURE_MIN_CONFIDENCE = 0.65;
+const MIXED_STRUCTURE_MIN_MARGIN = 0.12;
+const GEMINI_TABLE_FIELD_ROLE_MODEL = "gemini-2.5-flash";
+
+function isTableStructureDebugEnabled(): boolean {
+  return typeof window !== "undefined" && window.localStorage.getItem("debug_table_structure") === "1";
+}
+
+function logTableStructureDebug(event: string, payload: Record<string, unknown>): void {
+  if (!isTableStructureDebugEnabled()) return;
+  console.debug(`[table-structure] ${event}`, payload);
+}
+
+function sanitizeLocalStructureGeometry(
+  winner: AnalysisTableStructureKind,
+  topHeaderRows: number[],
+  leftHeaderCols: number[],
+  dataRegion?: LogicalTableStructureHint["dataRegion"]
+): Pick<LocalStructureAssessment, "headerAxis" | "headerRows" | "headerCols" | "dataRegion"> {
+  if (winner === "mixed") {
+    return {
+      headerAxis: "mixed",
+      headerRows: topHeaderRows.length > 0 ? topHeaderRows.map((index) => index + 1) : undefined,
+      headerCols: leftHeaderCols.length > 0 ? leftHeaderCols.map((index) => index + 1) : undefined,
+      dataRegion,
+    };
+  }
+
+  if (winner === "row-major") {
+    return {
+      headerAxis: "row",
+      headerRows: topHeaderRows.length > 0 ? topHeaderRows.map((index) => index + 1) : undefined,
+      headerCols: leftHeaderCols.length > 0 ? leftHeaderCols.map((index) => index + 1) : undefined,
+      dataRegion,
+    };
+  }
+
+  if (winner === "column-major") {
+    return {
+      headerAxis: "column",
+      headerRows: topHeaderRows.length > 0 ? topHeaderRows.map((index) => index + 1) : undefined,
+      headerCols: leftHeaderCols.length > 0 ? leftHeaderCols.map((index) => index + 1) : undefined,
+      dataRegion,
+    };
+  }
+
+  return {
+    headerAxis: "ambiguous",
+    headerRows: undefined,
+    headerCols: undefined,
+    dataRegion: undefined,
+  };
 }
 
 const GEMINI_TABLE_RANGE_MODEL = "gemini-2.5-flash";
@@ -596,16 +694,40 @@ function buildLocalStructureAssessment(rawRows: string[][], rowMajorScore: numbe
   if (winner === "mixed" && (!dataRegion || headerRowCount === 0 || headerColCount === 0)) {
     reviewReasons.push("mixed geometry incomplete");
   }
-  if (winnerScore < 0.55) reviewReasons.push("low local structure confidence");
-  if (margin < 0.1) reviewReasons.push("local structure margin too small");
-  if (winner === "mixed" && winnerScore < 0.65) reviewReasons.push("mixed signal below threshold");
+  if (winnerScore < LOCAL_STRUCTURE_MIN_CONFIDENCE) reviewReasons.push("low local structure confidence");
+  if (margin < LOCAL_STRUCTURE_MIN_MARGIN) reviewReasons.push("local structure margin too small");
+  if (winner === "mixed" && winnerScore < MIXED_STRUCTURE_MIN_CONFIDENCE) reviewReasons.push("mixed signal below threshold");
 
   const normalizedWinner: AnalysisTableStructureKind =
-    winner === "mixed" && winnerScore >= 0.65 && margin >= 0.12 && headerRowCount > 0 && headerColCount > 0 && dataRegion
+    winner === "mixed" && winnerScore >= MIXED_STRUCTURE_MIN_CONFIDENCE && margin >= MIXED_STRUCTURE_MIN_MARGIN && headerRowCount > 0 && headerColCount > 0 && dataRegion
       ? "mixed"
-      : winnerScore < 0.55 || margin < 0.1
+      : winnerScore < LOCAL_STRUCTURE_MIN_CONFIDENCE || margin < LOCAL_STRUCTURE_MIN_MARGIN
         ? "ambiguous"
         : winner;
+
+  if (winner !== normalizedWinner) {
+    reviewReasons.push(`normalized from ${winner} to ${normalizedWinner}`);
+  }
+
+  const sanitizedGeometry = sanitizeLocalStructureGeometry(normalizedWinner, topHeaderRows, leftHeaderCols, dataRegion);
+
+  if (normalizedWinner === "ambiguous" || winner !== normalizedWinner || reviewReasons.length > 0) {
+    logTableStructureDebug("local-structure-assessment", {
+      rowMajorScore,
+      columnMajorScore,
+      scoreGap,
+      scores,
+      winner,
+      winnerScore,
+      runnerUp,
+      margin,
+      normalizedWinner,
+      headerRowCount,
+      headerColCount,
+      dataRegion,
+      reviewReasons,
+    });
+  }
 
   return {
     winner: normalizedWinner,
@@ -617,16 +739,7 @@ function buildLocalStructureAssessment(rawRows: string[][], rowMajorScore: numbe
           ? Math.max(scores["column-major"], 0.2)
           : Math.max(scores.ambiguous, 0.2),
     scores,
-    headerAxis: normalizedWinner === "mixed"
-      ? "mixed"
-      : normalizedWinner === "row-major"
-        ? "row"
-        : normalizedWinner === "column-major"
-          ? "column"
-          : "ambiguous",
-    headerRows: headerRowCount > 0 ? topHeaderRows.map((index) => index + 1) : undefined,
-    headerCols: headerColCount > 0 ? leftHeaderCols.map((index) => index + 1) : undefined,
-    dataRegion: normalizedWinner === "mixed" ? dataRegion : undefined,
+    ...sanitizedGeometry,
     candidates: ranked.slice(0, 3).map((candidate) => ({
       structure: candidate.structure,
       confidence: candidate.confidence,
@@ -787,6 +900,206 @@ function buildGridPreview(rawRows: string[][], maxRows = 120, maxCols = 20): str
     `[GRID_ROWS]`,
     ...visibleRows,
   ].join("\n");
+}
+
+function createEmptyAITableFieldRoleResult(): AITableFieldRoleResult {
+  return {
+    orientation: "both",
+    fields: [],
+    confidence: 0,
+  };
+}
+
+function buildFieldRoleSystemInstruction(): string {
+  return [
+    "당신은 표 스키마를 해석하는 분석기입니다. 반드시 JSON만 반환하세요. 설명, 마크다운, 코드블록은 금지합니다.",
+    "목표는 표의 필드 이름을 Dimension(범주)과 Metric(지표)로 구분하는 것입니다.",
+    "중요 규칙:",
+    "- 데이터 본문 값(예: 수도권, 영남권, 35.2)은 필드 이름으로 승격하지 않습니다.",
+    "- 시간/순서 관련 값(예: 2021년, 1분기, 2Q)은 숫자가 있어도 Dimension 값으로 간주하며, 필드 이름 자체가 아닙니다.",
+    "- 단위가 포함된 측정값 이름(예: 매출액 (조 원), 비중(%), 종사자 수)은 Metric 필드일 가능성이 높습니다.",
+    "- orientation은 row, column, both 중 하나만 반환합니다.",
+    "- fields는 실제 필드 이름만 포함합니다. 값 목록을 넣지 마세요.",
+    "- index는 추정된 필드 순서입니다. 0부터 시작합니다.",
+    "- type은 간단한 문자열(date, category, numeric, percent, currency, text 등)로 작성합니다.",
+    "반환 형식:",
+    JSON.stringify({
+      orientation: "row",
+      fields: [
+        { name: "연도", role: "dimension", type: "date", index: 0 },
+        { name: "매출액 (조 원)", role: "metric", type: "currency", index: 1 },
+      ],
+      confidence: 0.92,
+    }, null, 2),
+  ].join("\n");
+}
+
+function extractJsonObject(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    return trimmed;
+  }
+
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    return trimmed.slice(start, end + 1);
+  }
+
+  throw new Error("No JSON object found");
+}
+
+function sanitizeAITableOrientation(value: unknown): AITableOrientation {
+  if (value === "row" || value === "column" || value === "both") {
+    return value;
+  }
+  return "both";
+}
+
+function sanitizeAITableFieldRoleField(value: unknown): AITableFieldRoleField | null {
+  if (!value || typeof value !== "object") return null;
+
+  const candidate = value as Record<string, unknown>;
+  const name = typeof candidate.name === "string" ? candidate.name.trim() : "";
+  const role = candidate.role === "dimension" || candidate.role === "metric" ? candidate.role : null;
+  const type = typeof candidate.type === "string" ? candidate.type.trim() : "text";
+  const index = typeof candidate.index === "number" && Number.isFinite(candidate.index)
+    ? candidate.index
+    : typeof candidate.index === "string" && candidate.index.trim() && Number.isFinite(Number(candidate.index))
+      ? Number(candidate.index)
+      : null;
+
+  if (!name || !role || index === null) return null;
+
+  return {
+    name,
+    role,
+    type: type || "text",
+    index: Math.max(0, Math.floor(index)),
+  };
+}
+
+function parseAITableFieldRoleResponse(text: string): AITableFieldRoleResult {
+  const parsed = JSON.parse(extractJsonObject(text)) as Record<string, unknown>;
+  const fields = Array.isArray(parsed.fields)
+    ? parsed.fields
+        .map((item) => sanitizeAITableFieldRoleField(item))
+        .filter((item): item is AITableFieldRoleField => item !== null)
+    : [];
+  const dedupedFields = fields
+    .sort((left, right) => left.index - right.index || left.name.localeCompare(right.name))
+    .filter((field, index, array) => array.findIndex((item) => item.name === field.name && item.role === field.role) === index);
+  const confidence = typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence)
+    ? Math.min(1, Math.max(0, parsed.confidence))
+    : 0;
+
+  return {
+    orientation: sanitizeAITableOrientation(parsed.orientation),
+    fields: dedupedFields,
+    confidence,
+  };
+}
+
+export function serializeTableDataForFieldRoleAI(tableData: TableFieldRoleSource): string {
+  return JSON.stringify({
+    columns: tableData.columns,
+    rows: tableData.rows.slice(0, 40),
+    rowCount: tableData.rowCount,
+    columnCount: tableData.columnCount,
+    orientation: tableData.orientation,
+    headerAxis: tableData.headerAxis,
+    localStructureHint: tableData.localStructureHint,
+  }, null, 2);
+}
+
+export async function deriveTableFieldRolesWithAI(
+  rawTableText: string,
+  options?: DeriveTableFieldRolesWithAIOptions
+): Promise<AITableFieldRoleResult> {
+  const apiKey = options?.apiKey?.trim();
+  if (!apiKey) return createEmptyAITableFieldRoleResult();
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${options?.model ?? GEMINI_TABLE_FIELD_ROLE_MODEL}:generateContent?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: buildFieldRoleSystemInstruction() }] },
+        contents: [{
+          role: "user",
+          parts: [{
+            text: [
+              "다음 표 원본을 분석해 orientation과 fields를 JSON으로 반환하세요.",
+              "필드 이름과 실제 값은 엄격히 구분해야 합니다.",
+              "[TABLE_INPUT]",
+              rawTableText,
+            ].join("\n\n"),
+          }],
+        }],
+        generationConfig: { responseMimeType: "application/json" },
+      }),
+    });
+
+    if (!response.ok) return createEmptyAITableFieldRoleResult();
+
+    const payload = await response.json();
+    const responseText = payload.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (typeof responseText !== "string" || !responseText.trim()) {
+      return createEmptyAITableFieldRoleResult();
+    }
+
+    return parseAITableFieldRoleResponse(responseText);
+  } catch {
+    return createEmptyAITableFieldRoleResult();
+  }
+}
+
+export function deriveTableFieldRolesFromAIResult(result: AITableFieldRoleResult | null | undefined): TableFieldRoles {
+  if (!result || result.fields.length === 0) {
+    return {
+      dimensions: [],
+      metrics: [],
+      confidence: 0,
+      reasons: ["ai-field-role-parser-empty"],
+    };
+  }
+
+  const sortedFields = [...result.fields].sort((left, right) => left.index - right.index || left.name.localeCompare(right.name));
+  return {
+    dimensions: uniqueNonEmpty(sortedFields.filter((field) => field.role === "dimension").map((field) => field.name)),
+    metrics: uniqueNonEmpty(sortedFields.filter((field) => field.role === "metric").map((field) => field.name)),
+    confidence: result.confidence,
+    reasons: ["ai-field-role-parser", `orientation=${result.orientation}`],
+  };
+}
+
+export function resolveTableFieldRoles(
+  tableData: TableFieldRoleSource,
+  options?: { aiResult?: AITableFieldRoleResult | null }
+): TableFieldRoles {
+  const aiRoles = deriveTableFieldRolesFromAIResult(options?.aiResult);
+  const heuristicRoles = deriveTableFieldRoles(tableData);
+  const hasUsefulAI = (aiRoles.dimensions.length > 0 || aiRoles.metrics.length > 0) && aiRoles.confidence >= 0.35;
+
+  if (!hasUsefulAI) {
+    return heuristicRoles;
+  }
+
+  return {
+    dimensions: aiRoles.dimensions.length > 0 ? aiRoles.dimensions : heuristicRoles.dimensions,
+    metrics: aiRoles.metrics.length > 0 ? aiRoles.metrics : heuristicRoles.metrics,
+    confidence: Math.max(aiRoles.confidence, heuristicRoles.confidence),
+    reasons: [...aiRoles.reasons, ...heuristicRoles.reasons],
+  };
+}
+
+export async function deriveAndResolveTableFieldRolesWithAI(
+  tableData: TableFieldRoleSource,
+  rawTableText: string,
+  options?: DeriveTableFieldRolesWithAIOptions
+): Promise<TableFieldRoles> {
+  const aiResult = await deriveTableFieldRolesWithAI(rawTableText, options);
+  return resolveTableFieldRoles(tableData, { aiResult });
 }
 
 function shouldInvokeGeminiFallback(logicalTables: LogicalTable[], rawRows: string[][]): boolean {
@@ -1885,6 +2198,12 @@ type LayoutDataSnippetSource = Pick<TableData, "columns" | "rows" | "rowCount" |
   localStructureHint?: Pick<LogicalTableStructureHint, "winner" | "headerAxis">;
 };
 
+type TableFieldRoleSource = Pick<TableData, "columns" | "rows" | "rowCount" | "columnCount"> & {
+  orientation?: AnalysisTableStructureKind | LogicalTableOrientation;
+  headerAxis?: LogicalTableStructureHint["headerAxis"] | LogicalTableHeaderAxis;
+  localStructureHint?: Pick<LogicalTableStructureHint, "winner" | "headerAxis" | "headerRows" | "headerCols" | "dataRegion">;
+};
+
 function isYearLikeLabel(value: string): boolean {
   const normalized = value.trim();
   return /(?:19|20)\d{2}/.test(normalized) || /\b\d{2}년\b/.test(normalized) || /(?:19|20)\d{2}\s*년/.test(normalized);
@@ -1894,9 +2213,179 @@ function getRowHeaderValues(rows: string[][]): string[] {
   return rows.map((row) => normalizeCellValue(row[0] ?? "")).filter(Boolean);
 }
 
-export function buildLayoutDataSnippet(tableData: LayoutDataSnippetSource): LayoutDataSnippet {
+function uniqueNonEmpty(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function getProfileNumericCoverage(profile: ColumnProfile): number {
+  return Math.max(profile.numberCoverage, profile.percentCoverage, profile.currencyCoverage);
+}
+
+function isPlaceholderHeader(name: string, index: number): boolean {
+  const normalized = name.trim();
+  return !normalized || normalized === getDefaultHeader(index);
+}
+
+function isMetricLabelException(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return true;
+  return ["비고", "remark", "remarks", "note", "notes", "단위", "unit", "units"].some((keyword) => normalized === keyword || normalized.includes(keyword));
+}
+
+function looksNumericLikeLabel(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) return false;
+  return parsePercentNumber(normalized) !== null || parseCurrencyNumber(normalized) !== null || parsePlainNumber(normalized) !== null || isYearLikeLabel(normalized);
+}
+
+function looksTextLikeLabel(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) return false;
+  return /[A-Za-z가-힣]/.test(normalized);
+}
+
+function clampIndex(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+export function rebaseLogicalTableGeometry(table: LogicalTable): AbsoluteTableStructureGeometry {
+  const local = table.localStructureHint;
+  if (!local) {
+    return {};
+  }
+
+  return {
+    headerRows: local.headerRows?.map((row) => table.startRow + row - 1),
+    headerCols: local.headerCols?.map((col) => table.startCol + col - 1),
+    dataRegion: local.dataRegion
+      ? {
+          startRow: table.startRow + local.dataRegion.startRow - 1,
+          endRow: table.startRow + local.dataRegion.endRow - 1,
+          startCol: table.startCol + local.dataRegion.startCol - 1,
+          endCol: table.startCol + local.dataRegion.endCol - 1,
+        }
+      : undefined,
+  };
+}
+
+export function deriveTableFieldRoles(tableData: TableFieldRoleSource): TableFieldRoles {
   const profiles = profileColumns(tableData.columns, tableData.rows);
-  const metricCandidates = rankMetricCandidates(profiles);
+  const rankedDimensions = rankDimensionCandidates(profiles).map((candidate) => candidate.name);
+  const rankedMetrics = rankMetricCandidates(profiles).map((candidate) => candidate.name);
+  const structureHint = tableData.localStructureHint?.winner ?? tableData.orientation ?? "ambiguous";
+  const headerAxisHint = tableData.localStructureHint?.headerAxis ?? tableData.headerAxis ?? "ambiguous";
+  const axisMetadata = buildLayoutAxisMetadata({
+    columns: tableData.columns,
+    rows: tableData.rows,
+    rowCount: tableData.rowCount,
+    columnCount: tableData.columnCount,
+    orientation:
+      tableData.orientation === "row-major" || tableData.orientation === "column-major" || tableData.orientation === "ambiguous"
+        ? tableData.orientation
+        : undefined,
+    headerAxis:
+      tableData.headerAxis === "row" || tableData.headerAxis === "column" || tableData.headerAxis === "ambiguous"
+        ? tableData.headerAxis
+        : undefined,
+    localStructureHint: tableData.localStructureHint,
+  });
+
+  const firstHeader = tableData.columns[0]?.trim() || "";
+  const dataRegion = tableData.localStructureHint?.dataRegion;
+  const headerRows = tableData.localStructureHint?.headerRows ?? [];
+  const headerCols = tableData.localStructureHint?.headerCols ?? [];
+  const nonStubHeaders = tableData.columns
+    .map((name, index) => ({ name: name.trim(), index }))
+    .filter(({ index, name }) => index > 0 && !isPlaceholderHeader(name, index) && !isMetricLabelException(name));
+
+  if (headerAxisHint === "row") {
+    const headerBandStart = 1;
+    const headerBandEnd = dataRegion
+      ? clampIndex(dataRegion.endCol - 1, headerBandStart, Math.max(tableData.columns.length - 1, headerBandStart))
+      : Math.max(tableData.columns.length - 1, headerBandStart);
+    const headerBandHeaders = tableData.columns
+      .slice(headerBandStart, headerBandEnd + 1)
+      .map((name, offset) => ({ name: name.trim(), index: headerBandStart + offset }))
+      .filter(({ name, index }) => !isPlaceholderHeader(name, index) && !isMetricLabelException(name));
+    const fixedDimensions = !isPlaceholderHeader(firstHeader, 0) ? [firstHeader] : [];
+    const metricHeaders = headerBandHeaders
+      .filter(({ name }) => looksNumericLikeLabel(name))
+      .map(({ name }) => name);
+    const dimensionHeaders = headerBandHeaders
+      .filter(({ name }) => !looksNumericLikeLabel(name) && looksTextLikeLabel(name))
+      .map(({ name }) => name);
+
+    return {
+      dimensions: uniqueNonEmpty([...fixedDimensions, ...dimensionHeaders]),
+      metrics: uniqueNonEmpty(metricHeaders),
+      confidence: 0.8,
+      reasons: [
+        "headerAxis=row",
+        "mutually-exclusive-header-split",
+        `headerRows=${headerRows.join(",") || "-"}`,
+        dataRegion ? `dataRegion=R${dataRegion.startRow}-${dataRegion.endRow},C${dataRegion.startCol}-${dataRegion.endCol}` : "dataRegion=none",
+      ],
+    };
+  }
+
+  if (headerAxisHint === "column" && profiles.length > 1 && tableData.rowCount > 0) {
+    const metricStartIndex = dataRegion ? clampIndex(dataRegion.startRow - 1, 1, Math.max(tableData.columns.length - 1, 1)) : 1;
+    const metricEndIndex = dataRegion ? clampIndex(dataRegion.endRow - 1, metricStartIndex, Math.max(tableData.columns.length - 1, metricStartIndex)) : Math.max(tableData.columns.length - 1, metricStartIndex);
+    const metricProfiles = profiles
+      .slice(metricStartIndex, metricEndIndex + 1)
+      .filter((profile) => !profile.idLike && !isMetricLabelException(profile.name) && getProfileNumericCoverage(profile) >= 0.55);
+    const metricNames = uniqueNonEmpty(metricProfiles.map((profile) => profile.name));
+    const dimensionRowStart = dataRegion ? clampIndex(dataRegion.startCol - 2, 0, Math.max(tableData.rows.length - 1, 0)) : 0;
+    const dimensionRowEnd = dataRegion ? clampIndex(dataRegion.endCol - 2, dimensionRowStart, Math.max(tableData.rows.length - 1, dimensionRowStart)) : Math.max(tableData.rows.length - 1, dimensionRowStart);
+    const dimensionValues = uniqueNonEmpty([
+      ...(!isPlaceholderHeader(firstHeader, 0) ? [firstHeader] : []),
+      ...tableData.rows.slice(dimensionRowStart, dimensionRowEnd + 1).map((row) => normalizeCellValue(row[0] ?? "")),
+    ]);
+    const averageMetricCoverage = metricProfiles.length > 0
+      ? metricProfiles.reduce((sum, profile) => sum + getProfileNumericCoverage(profile), 0) / metricProfiles.length
+      : 0;
+
+    return {
+      dimensions: dimensionValues,
+      metrics: metricNames,
+      confidence: metricNames.length > 0 ? Math.min(1, Math.max(0.7, averageMetricCoverage)) : 0.55,
+      reasons: [
+        "headerAxis=column",
+        "metrics-from-first-column-body-labels-via-transposed-columns",
+        `headerCols=${headerCols.join(",") || "-"}`,
+        dataRegion ? `dataRegion=R${dataRegion.startRow}-${dataRegion.endRow},C${dataRegion.startCol}-${dataRegion.endCol}` : "dataRegion=none",
+        axisMetadata.timeAxisLikelyIn === "rows" ? "time-axis-in-rows" : `time-axis=${axisMetadata.timeAxisLikelyIn}`,
+      ],
+    };
+  }
+
+  const fallbackDimensions = uniqueNonEmpty([
+    ...rankedDimensions,
+    ...tableData.columns.filter((name, index) => index === 0 || !isPlaceholderHeader(name, index)),
+  ]).slice(0, 2);
+  const fallbackMetrics = uniqueNonEmpty([
+    ...rankedMetrics,
+    ...tableData.columns.filter((name, index) => index > 0 && !isPlaceholderHeader(name, index)),
+  ]).filter((name) => !fallbackDimensions.includes(name));
+
+  return {
+    dimensions: fallbackDimensions,
+    metrics: fallbackMetrics,
+    confidence: structureHint === "ambiguous" ? 0.45 : 0.6,
+    reasons: [`headerAxis=${headerAxisHint}`, `structure=${structureHint}`],
+  };
+}
+
+export function buildLayoutAxisMetadata(tableData: LayoutDataSnippetSource): LayoutAxisMetadata {
+  const profiles = profileColumns(tableData.columns, tableData.rows);
   const dimensionCandidates = rankDimensionCandidates(profiles);
   const structureHint = tableData.localStructureHint?.winner ?? tableData.orientation ?? "ambiguous";
   const headerAxisHint = tableData.localStructureHint?.headerAxis ?? tableData.headerAxis ?? "ambiguous";
@@ -1936,6 +2425,22 @@ export function buildLayoutDataSnippet(tableData: LayoutDataSnippetSource): Layo
         : timeAxisLikelyIn === "rows"
           ? "columns"
           : "ambiguous";
+
+  return {
+    orientationHint: structureHint,
+    headerAxisHint,
+    timeAxisLikelyIn,
+    categoryAxisLikelyIn,
+    columnHeaderContainsYear,
+    rowHeaderContainsYear,
+  };
+}
+
+export function buildLayoutDataSnippet(tableData: LayoutDataSnippetSource): LayoutDataSnippet {
+  const profiles = profileColumns(tableData.columns, tableData.rows);
+  const metricCandidates = rankMetricCandidates(profiles);
+  const dimensionCandidates = rankDimensionCandidates(profiles);
+  const axisMetadata = buildLayoutAxisMetadata(tableData);
   const metricSignals = metricCandidates
     .map((candidate) => profiles.find((profile) => profile.name === candidate.name))
     .filter((profile): profile is ColumnProfile => Boolean(profile))
@@ -1961,12 +2466,7 @@ export function buildLayoutDataSnippet(tableData: LayoutDataSnippetSource): Layo
   return {
     rowCount: tableData.rowCount,
     columnCount: tableData.columnCount,
-    orientationHint: structureHint,
-    headerAxisHint,
-    timeAxisLikelyIn,
-    categoryAxisLikelyIn,
-    columnHeaderContainsYear,
-    rowHeaderContainsYear,
+    ...axisMetadata,
     metricSignals,
     dimensionSignals,
   };

@@ -89,6 +89,8 @@ export interface TableInterpretationResult {
   findings: NarrativeItem[];
   implications: NarrativeItem[];
   cautions: NarrativeItem[];
+  insight?: string;
+  significantNumbers?: string[];
   layoutPlans?: LayoutPlan[];
   infographicPrompt?: string;
 }
@@ -345,18 +347,16 @@ export interface VisualizationBrief {
   prompt?: string;
 }
 
-export interface TableInsightContextCard {
+export interface TableInsightCard {
   tableId: string;
   tableName: string;
-  role: TableRole;
-  isPrimary: boolean;
-  coreInsights: string[];
-  contexts: string[];
-  cautions: string[];
-  chartHints: Array<{
-    chartType: LayoutChartType;
-    goal: string;
-  }>;
+  insight: string;
+  significantNumbers: string[];
+  metricName: string;
+  maxLabel: string;
+  maxValue: string;
+  minLabel: string;
+  minValue: string;
 }
 
 export interface TableChartRecommendationCaptionItem {
@@ -446,17 +446,5 @@ export interface TableSession {
     generatedImageDataUrl?: string;
   }>;
   infographicControls?: InfographicControls;
-  annotations?: Array<{
-    id: string;
-    position: { x: number; y: number; width: number; height: number; pageNumber: number };
-    imageOriginBase64: string;
-    messages: Array<{
-      role: "user" | "ai";
-      content: string;
-      citations?: number[];
-      generatedImageDataUrl?: string;
-    }>;
-    createdAt: number;
-  }>;
   createdAt: number;
 }

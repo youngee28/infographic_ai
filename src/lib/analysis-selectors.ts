@@ -1,5 +1,11 @@
 import { buildChartRecommendations, buildChartRecommendationsForLogicalTables } from "@/lib/chart-recommendation";
 import { buildLogicalTableIdAliasMap, resolveLogicalTableId } from "@/lib/table-id-resolution";
+import { buildTableInsightFacts } from "@/lib/table-insight";
+import { resolveTableFieldRoles } from "@/lib/table-utils";
+
+function hasStoredFieldRoles(dimensions?: string[], metrics?: string[]): boolean {
+  return (dimensions?.length ?? 0) > 0 || (metrics?.length ?? 0) > 0;
+}
 import type {
   AnalysisData,
   NarrativeItem,
@@ -7,7 +13,7 @@ import type {
   SourceTable,
   SummaryVariant,
   TableChartRecommendationCaptionItem,
-  TableInsightContextCard,
+  TableInsightCard,
   TableRelation,
   VisualizationBrief,
 } from "@/lib/session-types";
@@ -54,6 +60,39 @@ function compactUnique(values: Array<string | undefined | null>): string[] {
     result.push(normalized);
   }
   return result;
+}
+
+function tokenizeInsightText(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}%.-]+/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isValidInsightText(value: string | undefined, validationTokens: string[]): boolean {
+  const normalized = value?.trim();
+  if (!normalized) return false;
+
+  const allowed = new Set(validationTokens.map((token) => token.toLowerCase()));
+  const numericTokens = tokenizeInsightText(normalized).filter((token) => /\d/.test(token));
+  return numericTokens.every((token) => allowed.has(token));
+}
+
+function getValidatedSignificantNumbers(
+  significantNumbers: string[] | undefined,
+  fallback: string[],
+  validationTokens: string[]
+): string[] {
+  const allowed = new Set(validationTokens.map((token) => token.toLowerCase()));
+  const validated = (significantNumbers ?? []).filter((item) => {
+    const normalized = item.trim();
+    if (!normalized) return false;
+    const numericTokens = tokenizeInsightText(normalized).filter((token) => /\d/.test(token));
+    return numericTokens.every((token) => allowed.has(token));
+  });
+
+  return validated.length > 0 ? compactUnique(validated) : fallback;
 }
 
 function formatChartTypeLabel(chartType: string): string {
@@ -133,11 +172,6 @@ function narrativeToLines(items?: NarrativeItem[]): ReferenceLine[] {
       return { text, pages };
     })
     .filter((item): item is ReferenceLine => item !== null);
-}
-
-function narrativeToTexts(items?: NarrativeItem[]): string[] {
-  if (!Array.isArray(items)) return [];
-  return compactUnique(items.map((item) => item.text));
 }
 
 function stripListPrefix(value: string): string {
@@ -313,6 +347,12 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
       ?? analysisData.sheetStructure.tables[0]?.id;
     const tables = analysisData.sheetStructure.tables.map((table) => {
       const resolvedId = resolveLogicalTableId(table.id, aliases) ?? table.id;
+      const matchingLogicalTable = analysisData?.tableData?.logicalTables?.find((candidate) => candidate.id === resolvedId);
+      const fieldRoles = hasStoredFieldRoles(table.dimensions, table.metrics)
+        ? { dimensions: table.dimensions, metrics: table.metrics }
+        : matchingLogicalTable
+          ? resolveTableFieldRoles(matchingLogicalTable)
+          : { dimensions: table.dimensions, metrics: table.metrics };
       return {
         id: resolvedId,
       name: table.title,
@@ -326,8 +366,8 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
               ? "구조가 애매한 표 후보 검토"
               : "행 방향 표 구조 파악",
       context: `${table.range.startRow}-${table.range.endRow}행, ${table.range.startCol}-${table.range.endCol}열 범위의 구조화 표입니다.`,
-      dimensions: table.dimensions,
-      metrics: table.metrics,
+      dimensions: fieldRoles.dimensions,
+      metrics: fieldRoles.metrics,
       grain: table.structure,
         keyTakeaway: resolvedId === primaryTableId ? analysisData?.summaries[0]?.lines?.[0]?.text : undefined,
       structure: table.structure,
@@ -350,21 +390,29 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
 
   if (tableData.logicalTables && tableData.logicalTables.length > 0) {
     const primaryLogicalTableId = tableData.primaryLogicalTableId ?? tableData.logicalTables[0]?.id;
-    return tableData.logicalTables.map((table) => ({
-      id: table.id,
-      name: table.name,
-      role: table.id === primaryLogicalTableId ? "primary" : table.orientation === "column-major" ? "reference" : "supporting",
-      purpose: table.orientation === "column-major" ? "열 방향 표 구조 파악" : "행 방향 표 구조 파악",
-      context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열 범위의 논리 표입니다.`,
-      dimensions: table.columns.slice(0, 2),
-      metrics: table.columns.slice(2),
-      grain: table.orientation,
-      keyTakeaway: table.id === primaryLogicalTableId ? analysisData?.summaries[0]?.lines?.[0]?.text : undefined,
-    }));
+    return tableData.logicalTables.map((table) => {
+      const normalizedStructure = table.localStructureHint?.winner ?? table.orientation;
+      const fieldRoles = resolveTableFieldRoles(table);
+      return {
+        id: table.id,
+        name: table.name,
+        role: table.id === primaryLogicalTableId ? "primary" : normalizedStructure === "column-major" ? "reference" : "supporting",
+        purpose: normalizedStructure === "mixed" ? "행과 열 헤더가 혼합된 표 구조 파악" : normalizedStructure === "column-major" ? "열 방향 표 구조 파악" : normalizedStructure === "ambiguous" ? "구조가 애매한 표 후보 검토" : "행 방향 표 구조 파악",
+        context: `${table.startRow}-${table.endRow}행, ${table.startCol}-${table.endCol}열 범위의 논리 표입니다.`,
+        dimensions: fieldRoles.dimensions,
+        metrics: fieldRoles.metrics,
+        grain: normalizedStructure,
+        keyTakeaway: table.id === primaryLogicalTableId ? analysisData?.summaries[0]?.lines?.[0]?.text : undefined,
+      };
+    });
   }
 
-  const dimensionCandidates = tableData.columns.slice(0, 2);
-  const metricCandidates = tableData.columns.slice(2);
+  const fieldRoles = resolveTableFieldRoles({
+    columns: tableData.columns,
+    rows: tableData.rows,
+    rowCount: tableData.rowCount,
+    columnCount: tableData.columnCount,
+  });
   return [
     {
       id: "table-1",
@@ -372,8 +420,8 @@ function deriveSourceTables(analysisData?: AnalysisData | null): SourceTable[] {
       role: "primary",
       purpose: "핵심 데이터 구조 파악",
       context: toDisplaySafeTableContext(analysisData?.tableContext) || "업로드된 표의 핵심 구조와 수치를 해석하기 위한 기본 표입니다.",
-      dimensions: dimensionCandidates,
-      metrics: metricCandidates,
+      dimensions: fieldRoles.dimensions,
+      metrics: fieldRoles.metrics,
       grain: tableData.sheetName ? "sheet" : undefined,
       keyTakeaway: analysisData?.summaries[0]?.lines?.[0]?.text,
     },
@@ -439,94 +487,6 @@ function deriveVisualizationBrief(analysisData?: AnalysisData | null): Visualiza
   };
 }
 
-function narrativeBelongsToTable(item: NarrativeItem, tableId: string): boolean {
-  if (item.sourceTableIds?.includes(tableId)) return true;
-  return item.evidence?.some((entry) => entry.tableId === tableId) ?? false;
-}
-
-function buildNarrativeBucket(
-  items: NarrativeItem[],
-  tables: SourceTable[],
-  primaryTableId: string
-): Map<string, string[]> {
-  const bucket = new Map<string, string[]>();
-
-  for (const table of tables) {
-    bucket.set(table.id, []);
-  }
-
-  for (const item of items) {
-    const matchedTableIds = tables
-      .filter((table) => narrativeBelongsToTable(item, table.id))
-      .map((table) => table.id);
-
-    const targetTableIds = matchedTableIds.length > 0 ? matchedTableIds : [primaryTableId];
-    for (const tableId of targetTableIds) {
-      bucket.set(tableId, compactUnique([...(bucket.get(tableId) ?? []), item.text]));
-    }
-  }
-
-  return bucket;
-}
-
-function buildTableInterpretationBucket(analysisData?: AnalysisData | null): Map<string, {
-  findings: string[];
-  implications: string[];
-  cautions: string[];
-}> {
-  const bucket = new Map<string, {
-    findings: string[];
-    implications: string[];
-    cautions: string[];
-  }>();
-
-  for (const item of analysisData?.tableInterpretations ?? []) {
-    bucket.set(item.tableId, {
-      findings: narrativeToTexts(item.findings),
-      implications: narrativeToTexts(item.implications),
-      cautions: narrativeToTexts(item.cautions),
-    });
-  }
-
-  return bucket;
-}
-
-function buildChartDirectionBucket(
-  analysisData: AnalysisData | null | undefined,
-  tables: SourceTable[],
-  primaryTableId: string
-): Map<string, Array<{ chartType: TableInsightContextCard["chartHints"][number]["chartType"]; goal: string }>> {
-  const bucket = new Map<string, TableInsightContextCard["chartHints"]>();
-
-  for (const table of tables) {
-    bucket.set(table.id, []);
-  }
-
-  const candidates = compactUnique(
-    [
-      ...(analysisData?.visualizationBrief?.chartDirections ?? []).map((item) => `${item.tableId}|||${item.chartType}|||${item.goal}`),
-      ...(analysisData?.chartRecommendations ?? []).map((item) => `${item.tableId?.trim() || primaryTableId}|||${item.chartType}|||${item.reason}`),
-    ]
-  )
-    .map((entry) => {
-      const [tableId, chartType, goal] = entry.split("|||");
-      return { tableId, chartType, goal };
-    })
-    .filter((item): item is { tableId: string; chartType: TableInsightContextCard["chartHints"][number]["chartType"]; goal: string } => {
-      return Boolean(item.tableId && item.chartType && item.goal);
-    });
-
-  for (const item of candidates) {
-    const targetTableId = tables.some((table) => table.id === item.tableId) ? item.tableId : primaryTableId;
-    bucket.set(targetTableId, [
-      ...(bucket.get(targetTableId) ?? []),
-      { chartType: item.chartType, goal: item.goal },
-    ]);
-  }
-
-  return bucket;
-}
-
 export function getAnalysisTitle(analysisData?: AnalysisData | null, fallbackTitle = "데이터 요약"): string {
   return analysisData?.dataset?.title?.trim() || analysisData?.title?.trim() || fallbackTitle;
 }
@@ -572,81 +532,82 @@ export function getVisualizationBrief(analysisData?: AnalysisData | null): Visua
   return deriveVisualizationBrief(analysisData);
 }
 
-export function getTableInsightContextCards(analysisData?: AnalysisData | null): TableInsightContextCard[] {
-  const tables = deriveSourceTables(analysisData);
-  if (tables.length === 0) return [];
+export function getTableInsightCards(analysisData?: AnalysisData | null): TableInsightCard[] {
+  const sourceTables = deriveSourceTables(analysisData);
+  const tableData = analysisData?.tableData;
+  if (sourceTables.length === 0 || !tableData) return [];
 
-  const brief = deriveVisualizationBrief(analysisData);
-  const resolvedPrimaryTableId = brief?.primaryTableId && tables.some((table) => table.id === brief.primaryTableId)
-    ? brief.primaryTableId
-    : tables[0]?.id ?? "table-1";
-  const primaryTableId = resolvedPrimaryTableId;
-  const findingsByTable = buildNarrativeBucket(getFindings(analysisData), tables, primaryTableId);
-  const implicationsByTable = buildNarrativeBucket(getImplications(analysisData), tables, primaryTableId);
-  const cautionsByTable = buildNarrativeBucket(getCautions(analysisData), tables, primaryTableId);
-  const interpretationsByTable = buildTableInterpretationBucket(analysisData);
-  const chartDirectionsByTable = buildChartDirectionBucket(analysisData, tables, primaryTableId);
+  const aliases = buildLogicalTableIdAliasMap({
+    tableData,
+    sheetStructure: analysisData?.sheetStructure,
+    sourceTables: analysisData?.sourceInventory?.tables,
+  });
+  const sourceTableById = new Map(sourceTables.map((table) => [table.id, table]));
+  const primaryTableId = analysisData?.visualizationBrief?.primaryTableId && sourceTableById.has(analysisData.visualizationBrief.primaryTableId)
+    ? analysisData.visualizationBrief.primaryTableId
+    : sourceTables[0]?.id;
 
-  return [...tables]
-    .sort((left, right) => {
-      if (left.id === primaryTableId) return -1;
-      if (right.id === primaryTableId) return 1;
-      return 0;
-    })
+  const logicalTables = tableData.logicalTables && tableData.logicalTables.length > 0
+    ? tableData.logicalTables.map((table) => ({
+        id: resolveLogicalTableId(table.id, aliases) ?? table.id,
+        name: table.name,
+        columns: table.columns,
+        rows: table.rows,
+      }))
+    : [{
+        id: sourceTables[0]?.id ?? "table-1",
+        name: sourceTables[0]?.name ?? analysisData?.title?.trim() ?? "기본 표",
+        columns: tableData.columns,
+        rows: tableData.rows,
+      }];
+
+  const interpretationByTableId = new Map(
+    (analysisData?.tableInterpretations ?? []).map((item) => [item.tableId, item])
+  );
+
+  return logicalTables
     .map((table) => {
-      const tableInterpretation = interpretationsByTable.get(table.id);
-      const chartHints = compactUnique(
-        (chartDirectionsByTable.get(table.id) ?? []).map((item) => `${item.chartType}|||${item.goal}`)
-      )
-        .map((entry) => {
-          const [chartType, goal] = entry.split("|||");
-          return { chartType, goal };
-        })
-        .filter((item): item is TableInsightContextCard["chartHints"][number] => Boolean(item.chartType && item.goal))
-        .slice(0, 2);
-      const coreInsights = compactUnique(
-        tableInterpretation?.findings.length
-          ? tableInterpretation.findings
-          : [
-              ...(findingsByTable.get(table.id) ?? []),
-              table.keyTakeaway,
-            ]
-      ).slice(0, 3);
-      const fallbackCoreInsights = coreInsights.length > 0 ? [] : compactUnique([
-        ...(table.id === primaryTableId ? [brief?.coreMessage] : []),
-        table.metrics.length > 0 ? `주요 지표: ${table.metrics.slice(0, 2).join(", ")}` : undefined,
-        table.dimensions.length > 0 ? `비교 축: ${table.dimensions.slice(0, 2).join(", ")}` : undefined,
-      ]);
-      const resolvedCoreInsights = compactUnique([...coreInsights, ...fallbackCoreInsights]).slice(0, 3);
-      const contexts = compactUnique(
-        tableInterpretation?.implications.length
-          ? tableInterpretation.implications
-          : [
-              ...(implicationsByTable.get(table.id) ?? []),
-            ]
+      const sourceTable = sourceTableById.get(table.id);
+      const facts = buildTableInsightFacts({
+        tableId: table.id,
+        tableName: sourceTable?.name ?? table.name,
+        columns: table.columns,
+        rows: table.rows,
+        dimensions: sourceTable?.dimensions,
+        metrics: sourceTable?.metrics,
+      });
+      if (!facts) return null;
+
+      const interpretation = interpretationByTableId.get(table.id);
+      const fallbackInsight = `${facts.tableName}에서는 ${facts.metricName} 기준 차이가 확인됩니다.`;
+      const fallbackSignificantNumbers = facts.notableFacts.slice(0, 3);
+      const geminiInsight = interpretation?.insight?.trim();
+      const geminiSignificantNumbers = interpretation?.significantNumbers ?? [];
+      const validatedInsight = isValidInsightText(geminiInsight, facts.validationTokens) ? geminiInsight : fallbackInsight;
+      const validatedSignificantNumbers = getValidatedSignificantNumbers(
+        geminiSignificantNumbers,
+        fallbackSignificantNumbers,
+        facts.validationTokens
       );
-      const fallbackContexts = contexts.length > 0 ? [] : compactUnique([
-        table.purpose,
-      ]);
-      const resolvedContexts = compactUnique([...contexts, ...fallbackContexts]).slice(0, 2);
-      const cautions = compactUnique(
-        tableInterpretation?.cautions.length
-          ? tableInterpretation.cautions
-          : cautionsByTable.get(table.id) ?? []
-      ).slice(0, 1);
 
       return {
         tableId: table.id,
-        tableName: table.name,
-        role: table.role,
-        isPrimary: table.id === primaryTableId,
-        coreInsights: resolvedCoreInsights,
-        contexts: resolvedContexts,
-        cautions,
-        chartHints,
+        tableName: sourceTable?.name ?? table.name,
+        insight: validatedInsight,
+        significantNumbers: validatedSignificantNumbers,
+        metricName: facts.metricName,
+        maxLabel: facts.max.label,
+        maxValue: facts.max.rawValue,
+        minLabel: facts.min.label,
+        minValue: facts.min.rawValue,
       };
     })
-    .filter((card) => card.coreInsights.length > 0 || card.contexts.length > 0 || card.chartHints.length > 0 || card.cautions.length > 0);
+    .filter((card): card is TableInsightCard => card !== null)
+    .sort((left, right) => {
+      if (left.tableId === primaryTableId) return -1;
+      if (right.tableId === primaryTableId) return 1;
+      return 0;
+    });
 }
 
 export function getTableChartRecommendationCaptionItems(
@@ -656,58 +617,7 @@ export function getTableChartRecommendationCaptionItems(
   if (tables.length === 0) return [];
 
   const tableNameById = new Map(tables.map((table) => [table.id, table.name]));
-  const resolvedPrimaryTableId =
-    analysisData?.visualizationBrief?.primaryTableId && tables.some((table) => table.id === analysisData.visualizationBrief?.primaryTableId)
-      ? analysisData.visualizationBrief.primaryTableId
-      : tables[0]?.id ?? "table-1";
-  const topRecommendationByTable = new Map<string, { chartType: string; rationale: string }>();
-  const allowPrimaryFallback = tables.length === 1;
-  const fallbackTableIds = tables.map((table) => table.id);
-
-  for (const [tableId, recommendation] of buildBestRecommendationByTable(analysisData, tables)) {
-    topRecommendationByTable.set(tableId, recommendation);
-  }
-
-  const regeneratedRecommendations = analysisData?.tableData
-    ? buildChartRecommendationsForLogicalTables(analysisData.tableData, fallbackTableIds)
-    : [];
-  for (const recommendation of regeneratedRecommendations) {
-    const requestedTableId = recommendation.tableId?.trim();
-    const resolvedTableId = requestedTableId && tableNameById.has(requestedTableId)
-      ? requestedTableId
-      : allowPrimaryFallback
-        ? resolvedPrimaryTableId
-        : null;
-    if (!resolvedTableId || topRecommendationByTable.has(resolvedTableId)) continue;
-    topRecommendationByTable.set(resolvedTableId, {
-      chartType: recommendation.chartType,
-      rationale: formatChartRecommendationReason(recommendation.reason),
-    });
-  }
-
-  for (const direction of analysisData?.visualizationBrief?.chartDirections ?? []) {
-    const requestedTableId = direction.tableId?.trim();
-    const resolvedTableId = requestedTableId && tableNameById.has(requestedTableId)
-      ? requestedTableId
-      : allowPrimaryFallback
-        ? resolvedPrimaryTableId
-        : null;
-    if (!resolvedTableId) continue;
-    if (!topRecommendationByTable.has(resolvedTableId)) {
-      topRecommendationByTable.set(resolvedTableId, {
-        chartType: direction.chartType,
-        rationale: direction.goal,
-      });
-    }
-  }
-
-  const structuredChartHint = getStructuredChartHintLines(analysisData?.tableContext)
-    .map(parseStructuredChartHintLine)
-    .find((item): item is { chartType: string; rationale: string } => item !== null);
-
-  if (tables.length === 1 && structuredChartHint && !topRecommendationByTable.has(resolvedPrimaryTableId)) {
-    topRecommendationByTable.set(resolvedPrimaryTableId, structuredChartHint);
-  }
+  const topRecommendationByTable = buildBestRecommendationByTable(analysisData, tables);
 
   return tables
     .map((table) => {

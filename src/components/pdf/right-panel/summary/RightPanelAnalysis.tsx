@@ -3,9 +3,9 @@ import {
   getCautionReferenceLines,
   getFindingsSummaryVariant,
   getImplicationsSummaryVariant,
+  getTableInsightCards,
   getTableChartRecommendationCaptionItems,
   getSourceTables,
-  getTableInsightContextCards,
   getTableRelations,
 } from "@/lib/analysis-selectors";
 import { CheckPoints } from "./CheckPoints";
@@ -28,7 +28,7 @@ export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanel
   ]));
   const tables = getSourceTables(analysisData);
   const relations = getTableRelations(analysisData);
-  const tableInsightContextCards = getTableInsightContextCards(analysisData);
+  const tableInsightCards = getTableInsightCards(analysisData);
   const tableChartRecommendationCaptionItems = getTableChartRecommendationCaptionItems(analysisData);
   const findingsSummary = getFindingsSummaryVariant(analysisData);
   const implicationsSummary = getImplicationsSummaryVariant(analysisData);
@@ -39,7 +39,7 @@ export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanel
       <ReviewBanner reasons={reviewReasons} />
       <SourceInventoryPanel tables={tables} relations={relations} />
       <TableContextCaption items={tableChartRecommendationCaptionItems} />
-      <TableInfographicFocusPanel cards={tableInsightContextCards} />
+      <TableInfographicFocusPanel cards={tableInsightCards} />
       <ThreeLineSummary summary={findingsSummary} onCitationClick={onCitationClick} />
       <DetailedSummary summary={implicationsSummary} onCitationClick={onCitationClick} />
       <CheckPoints issues={cautions} onCitationClick={onCitationClick} />

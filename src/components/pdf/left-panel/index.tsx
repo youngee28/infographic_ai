@@ -6,9 +6,6 @@ import type { TableData } from "@/lib/table-utils";
 import { TablePreview } from "./TablePreview";
 
 interface LeftPanelProps {
-  fileUrl: string | null;
-  sessionId: string | null;
-  pageNumber?: number;
   analysisData?: AnalysisData | null;
   tableData?: TableData | null;
   rawSheetGrid?: RawSheetGrid | null;
@@ -23,11 +20,9 @@ interface LeftPanelProps {
   onResetTableEdits?: () => void;
   onApplyTableEdits?: () => void;
   onOpenSidebar?: () => void;
-  onPageChange?: (page: number) => void;
 }
 
 export function LeftPanel({
-  fileUrl,
   analysisData,
   tableData,
   rawSheetGrid,
@@ -43,8 +38,6 @@ export function LeftPanel({
   onApplyTableEdits,
   onOpenSidebar,
 }: LeftPanelProps) {
-  if (!fileUrl) return null;
-
   return (
     <TablePreview
       fileName={analysisData?.title}

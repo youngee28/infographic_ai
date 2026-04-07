@@ -76,12 +76,12 @@ export function SourceInventoryPanel({ tables, relations }: SourceInventoryPanel
                   </div>
                 )}
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {table.dimensions.slice(0, 3).map((item) => (
+                  {table.dimensions.map((item) => (
                     <span key={`${table.id}-dim-${item}`} className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-600">
                       범주 {item}
                     </span>
                   ))}
-                  {table.metrics.slice(0, 3).map((item) => (
+                  {table.metrics.map((item) => (
                     <span key={`${table.id}-metric-${item}`} className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] text-gray-600">
                       지표 {item}
                     </span>
