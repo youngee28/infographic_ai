@@ -3,8 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Menu, Sparkles } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { buildLayoutTableBriefs, hasReadyLayoutBriefInputs } from "@/components/pdf/right-panel/layout/briefs";
-import { buildDeterministicLayoutPlans } from "@/components/pdf/right-panel/layout/planner";
+import { buildDeterministicLayoutPlans, buildPlannerInput, hasReadyPlannerInputs } from "@/components/pdf/right-panel/layout/planner";
 import { canonicalizeLayoutPlans, getSelectedLayoutPlan } from "@/components/pdf/right-panel/layout/selection";
 import { useAppStore } from "@/lib/app-store";
 import { normalizeAnalysisData } from "@/lib/analysis-schema";
@@ -1185,30 +1184,29 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
 
       const merged = mergeTableInterpretations({ sheetStructure: enrichedSheetStructure }, interpretationResults);
       const layoutImagePromptInstruction = options?.imagePromptOverride?.trim() || layoutImagePrompt?.trim() || DEFAULT_LAYOUT_IMAGE_PROMPT;
-      const layoutTableBriefs = buildLayoutTableBriefs({
-        sheetStructure: enrichedSheetStructure,
-        sourceTables: sourceInventory.tables,
-        interpretationResults,
-        chartRecommendations,
-        tableData: currentTableData,
-      });
-      if (layoutTableBriefs.length === 0 || !hasReadyLayoutBriefInputs({
+      if (!hasReadyPlannerInputs({
         status: "complete",
         sheetStructure: enrichedSheetStructure,
         reviewReasons: synthesizedReviewReasons,
         tableInterpretations: interpretationResults,
       })) {
-        throw new Error("Layout brief inputs are not ready.");
+        throw new Error("Planner inputs are not ready.");
+      }
+      const plannerInput = buildPlannerInput({
+        title: baseAnalysis.title || getDatasetTitle(session.fileName),
+        sheetStructure: enrichedSheetStructure,
+        sourceTables: sourceInventory.tables,
+        selectedSourceTableIds,
+        chartRecommendations,
+        tableData: currentTableData,
+        findings: merged.findings,
+        implications: merged.implications,
+      });
+      if (plannerInput.tables.length === 0) {
+        throw new Error("Planner inputs are empty.");
       }
       const generatedLayoutPlans = canonicalizeLayoutPlans(
-        buildDeterministicLayoutPlans({
-          title: baseAnalysis.title || getDatasetTitle(session.fileName),
-          tableBriefs: layoutTableBriefs,
-          selectedSourceTableIds,
-          chartRecommendations,
-          findings: merged.findings,
-          implications: merged.implications,
-        }),
+        buildDeterministicLayoutPlans(plannerInput),
         tableIdAliases
       );
       const normalizedLayoutPlans = rerankLayoutPlansByRecommendations(
