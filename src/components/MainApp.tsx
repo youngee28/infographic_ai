@@ -4,7 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Menu, Sparkles } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { buildDeterministicLayoutPlans, buildPlannerInput, hasReadyPlannerInputs } from "@/components/pdf/right-panel/layout/planner";
-import { canonicalizeLayoutPlans, getSelectedLayoutPlan } from "@/components/pdf/right-panel/layout/selection";
+import {
+  buildAnalysisWithSingleLayoutPlan,
+  canonicalizeLayoutPlan,
+  canonicalizeLayoutPlans,
+  resolveSelectedLayoutPlan,
+} from "@/components/pdf/right-panel/layout/selection";
 import { useAppStore } from "@/lib/app-store";
 import { normalizeAnalysisData } from "@/lib/analysis-schema";
 import { mergeTableInterpretations, validateSheetStructure } from "@/lib/analysis-pipeline";
@@ -716,13 +721,10 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
       ? source.chartRecommendations
       : pending.chartRecommendations,
     title: source.title?.trim() || pending.title,
-    generatedLayoutPlans:
-      source.generatedLayoutPlans ??
-      (source.generatedLayoutPlan ? [source.generatedLayoutPlan] : source.layoutPlan ? [source.layoutPlan] : pending.generatedLayoutPlans),
-    selectedLayoutPlanId:
-      source.selectedLayoutPlanId ?? source.layoutPlan?.id ?? source.generatedLayoutPlan?.id ?? pending.selectedLayoutPlanId,
-    generatedLayoutPlan: source.generatedLayoutPlan ?? source.layoutPlan,
-    layoutPlan: source.layoutPlan ?? source.generatedLayoutPlan,
+    generatedLayoutPlans: undefined,
+    selectedLayoutPlanId: undefined,
+    generatedLayoutPlan: undefined,
+    layoutPlan: resolveSelectedLayoutPlan(source) ?? pending.layoutPlan,
     generatedInfographicPrompt:
       source.generatedInfographicPrompt?.trim() || source.infographicPrompt?.trim() || pending.generatedInfographicPrompt,
     tableContext: source.tableContext?.trim() || pending.tableContext,
@@ -1216,13 +1218,10 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
           (baseAnalysis.generatedLayoutPlan ? [baseAnalysis.generatedLayoutPlan] : baseAnalysis.layoutPlan ? [baseAnalysis.layoutPlan] : undefined),
         chartRecommendations
       );
-      const selectedLayoutPlan = getSelectedLayoutPlan(
-        normalizedLayoutPlans,
-        baseAnalysis.selectedLayoutPlanId,
-        baseAnalysis.layoutPlan ?? baseAnalysis.generatedLayoutPlan
-      );
+      const selectedLayoutPlan = normalizedLayoutPlans?.[0]
+        ?? canonicalizeLayoutPlan(resolveSelectedLayoutPlan({ ...baseAnalysis, ...merged }), tableIdAliases);
       const generatedInfographicPrompt = options?.imagePromptOverride?.trim() || merged.infographicPrompt || baseAnalysis.generatedInfographicPrompt || baseAnalysis.infographicPrompt || layoutImagePromptInstruction;
-      const rawAnalysis = {
+      const rawAnalysis = buildAnalysisWithSingleLayoutPlan({
         ...baseAnalysis,
         ...merged,
         schemaVersion: "3",
@@ -1235,16 +1234,12 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
         chartRecommendations,
         selectedSourceTableIds,
         sourceInventory,
-        generatedLayoutPlans: normalizedLayoutPlans,
-        selectedLayoutPlanId: selectedLayoutPlan?.id,
-        generatedLayoutPlan: normalizedLayoutPlans?.[0] ?? selectedLayoutPlan,
-        layoutPlan: selectedLayoutPlan,
         generatedInfographicPrompt,
         infographicPrompt: generatedInfographicPrompt,
         tableData: baseAnalysis.tableData,
         tableContext: baseAnalysis.tableContext,
         status: "complete" as const,
-      };
+      }, selectedLayoutPlan);
       const normalizedData: AnalysisData = normalizeAnalysisData(rawAnalysis, baseAnalysis.title || getDatasetTitle(session.fileName));
 
       const updatedSession = { ...session, analysisData: normalizedData };

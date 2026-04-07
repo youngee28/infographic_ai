@@ -24,6 +24,7 @@ import { getAnalysisTitle, getFindings, getLegacyKeywordFallback, getSourceTable
 import { buildInfographicContext, extractGeneratedImageResult } from "@/lib/infographic-generation";
 import { DEFAULT_LAYOUT_IMAGE_PROMPT } from "@/lib/layout-image-prompts";
 import { buildLayoutTreeFromPlan, projectLayoutPlanFromTree, reorderLayoutTreeRoots, updateLayoutTreeBlock } from "./layout-tree";
+import { buildAnalysisWithSingleLayoutPlan, resolveSelectedLayoutPlan } from "./selection";
 import { store } from "@/lib/store";
 import { buildLayoutAxisMetadata } from "@/lib/table-utils";
 import { buildLogicalTableIdAliasMap } from "@/lib/table-id-resolution";
@@ -44,9 +45,9 @@ import type {
   LayoutSectionType,
   LayoutTextBlock,
 } from "@/lib/session-types";
-import { LayoutPlanControls } from "./LayoutPlanControls";
-import { LayoutPlanCandidates, type LayoutPlanCandidateListItem } from "./LayoutPlanCandidates";
 import { LayoutPlanPreview, type PreviewMode } from "./LayoutPlanPreview";
+import { LayoutPlanPreviewSection } from "./LayoutPlanPreviewSection";
+import { LayoutPlanTopSection } from "./LayoutPlanTopSection";
 
 const SECTION_TYPE_LABELS: Record<LayoutSectionType, string> = {
   header: "헤더",
@@ -399,81 +400,41 @@ function isSameLayout(left: LayoutGeometry | undefined, right: LayoutGeometry): 
   return left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height;
 }
 
-function buildFallbackLayoutPlans(analysisData: AnalysisData | null): LayoutPlan[] {
-  if (!analysisData) return [];
+function buildFallbackLayoutPlan(analysisData: AnalysisData | null): LayoutPlan | null {
+  if (!analysisData) return null;
 
   const title = getAnalysisTitle(analysisData, "데이터 요약");
   const firstDimension = analysisData.tableData?.columns[0];
   const firstMetric = analysisData.tableData?.columns[1];
 
-  return [
-    {
-      id: "layout-option-1",
-      name: "시안",
-      description: "메인 비교 차트를 가장 크게 배치한 기본 시안",
-      layoutType: "dashboard",
-      aspectRatio: "portrait",
-      sections: [
-        { id: "header", type: "header", title },
-        {
-          id: "comparison",
-          type: "chart-group",
-          title: "핵심 비교 차트",
-          charts: [{ id: "bar-1", chartType: "bar", title: "핵심 비교", goal: "중요 지표 비교", dimension: firstDimension, metric: firstMetric }],
-        },
-      ],
-      visualPolicy: { textRatio: 0.15, chartRatio: 0.75, iconRatio: 0.1 },
-    },
-  ];
-}
-
-function resolveLayoutPlans(analysisData: AnalysisData | null): LayoutPlan[] {
-  const candidates = analysisData?.generatedLayoutPlans;
-  if (candidates && candidates.length > 0) {
-    return candidates.map((candidate, index) => ({
-      ...candidate,
-      id: candidate.id || `layout-option-${index + 1}`,
-      name: candidate.name || `시안 ${index + 1}`,
-      description: candidate.description || "구성 전략이 반영된 대시보드 시안",
-    }));
-  }
-
-  const legacy = analysisData?.layoutPlan ?? analysisData?.generatedLayoutPlan;
-  if (legacy) {
-    return [
+  return {
+    id: "layout-option-1",
+    name: "시안",
+    description: "메인 비교 차트를 가장 크게 배치한 기본 시안",
+    layoutType: "dashboard",
+    aspectRatio: "portrait",
+    sections: [
+      { id: "header", type: "header", title },
       {
-        ...legacy,
-        id: legacy.id || "layout-option-1",
-        name: legacy.name || "시안",
-        description: legacy.description || "저장된 레이아웃 시안",
+        id: "comparison",
+        type: "chart-group",
+        title: "핵심 비교 차트",
+        charts: [{ id: "bar-1", chartType: "bar", title: "핵심 비교", goal: "중요 지표 비교", dimension: firstDimension, metric: firstMetric }],
       },
-    ];
-  }
-
-  return buildFallbackLayoutPlans(analysisData);
+    ],
+    visualPolicy: { textRatio: 0.15, chartRatio: 0.75, iconRatio: 0.1 },
+  };
 }
 
-function getSelectedPlan(analysisData: AnalysisData | null, candidates: LayoutPlan[]): LayoutPlan | null {
-  if (candidates.length === 0) return null;
-  const selectedId = analysisData?.selectedLayoutPlanId;
-  return candidates.find((candidate) => candidate.id === selectedId) ?? candidates[0];
-}
-
-function buildAnalysisWithLayoutCandidates(
-  analysisData: AnalysisData,
-  candidates: LayoutPlan[],
-  selectedCandidateId = analysisData.selectedLayoutPlanId
-): AnalysisData {
-  const selectedPlan = candidates.find((candidate) => candidate.id === selectedCandidateId) ?? candidates[0];
-  const generatedPlanId = analysisData.generatedLayoutPlan?.id ?? candidates[0]?.id ?? selectedPlan?.id;
-  const generatedPlan = generatedPlanId ? candidates.find((candidate) => candidate.id === generatedPlanId) ?? analysisData.generatedLayoutPlan : undefined;
+function resolveLayoutPlan(analysisData: AnalysisData | null): LayoutPlan | null {
+  const activePlan = resolveSelectedLayoutPlan(analysisData) ?? buildFallbackLayoutPlan(analysisData);
+  if (!activePlan) return null;
 
   return {
-    ...analysisData,
-    generatedLayoutPlans: candidates,
-    selectedLayoutPlanId: selectedPlan?.id,
-    generatedLayoutPlan: generatedPlan ? cloneLayoutPlan(generatedPlan) ?? generatedPlan : undefined,
-    layoutPlan: selectedPlan ? cloneLayoutPlan(selectedPlan) ?? selectedPlan : undefined,
+    ...activePlan,
+    id: activePlan.id || "layout-option-1",
+    name: activePlan.name || "시안",
+    description: activePlan.description || "저장된 레이아웃 시안",
   };
 }
 
@@ -482,8 +443,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
   const layoutImagePrompt = useAppStore((s) => s.layoutImagePrompt);
   const setLayoutImagePrompt = useAppStore((s) => s.setLayoutImagePrompt);
   const selectedImageModel = useAppStore((s) => s.selectedImageModel);
-  const candidates = useMemo(() => resolveLayoutPlans(analysisData), [analysisData]);
-  const selectedPlan = useMemo(() => getSelectedPlan(analysisData, candidates), [analysisData, candidates]);
+  const selectedPlan = useMemo(() => resolveLayoutPlan(analysisData), [analysisData]);
   const [promptDraft, setPromptDraft] = useState(layoutImagePrompt);
   const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false);
   const [selectedSourceTableIds, setSelectedSourceTableIds] = useState<string[]>([]);
@@ -522,28 +482,32 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
     [sessionId, setAnalysisData]
   );
 
-  const persistCandidatePreviewImage = useCallback(
-    async (candidateId: string, previewImageDataUrl: string) => {
+  const persistLayoutPlanPreviewImage = useCallback(
+    async (layoutPlanId: string, previewImageDataUrl: string) => {
       const latestSession = sessionId ? await store.getSession(sessionId) : null;
       const latestAnalysisData = latestSession?.analysisData ?? analysisData;
       if (!latestAnalysisData) {
         return null;
       }
 
-      const mergedCandidates = resolveLayoutPlans(latestAnalysisData).map((plan) =>
-        plan.id === candidateId
-          ? {
-              ...plan,
-              previewImageDataUrl,
-            }
-          : plan
-      );
+      const latestLayoutPlan = resolveLayoutPlan(latestAnalysisData);
+      if (!latestLayoutPlan || latestLayoutPlan.id !== layoutPlanId) {
+        return null;
+      }
+
+      const nextLayoutPlan = {
+        ...latestLayoutPlan,
+        previewImageDataUrl,
+      };
 
       await persistAnalysisData(
-        buildAnalysisWithLayoutCandidates(latestAnalysisData, mergedCandidates, latestAnalysisData.selectedLayoutPlanId)
+        buildAnalysisWithSingleLayoutPlan(
+          latestAnalysisData,
+          cloneLayoutPlan(nextLayoutPlan) ?? nextLayoutPlan
+        )
       );
 
-      return mergedCandidates;
+      return nextLayoutPlan;
     },
     [analysisData, persistAnalysisData, sessionId]
   );
@@ -572,18 +536,6 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
     [analysisData, persistAnalysisData, selectedSourceTableIds]
   );
 
-  const selectCandidate = useCallback(
-    async (candidate: LayoutPlan) => {
-      const latestSession = sessionId ? await store.getSession(sessionId) : null;
-      const latestAnalysisData = latestSession?.analysisData ?? analysisData;
-      if (!latestAnalysisData) return;
-
-      const nextAnalysisData = buildAnalysisWithLayoutCandidates(latestAnalysisData, resolveLayoutPlans(latestAnalysisData), candidate.id);
-      await persistAnalysisData(nextAnalysisData);
-    },
-    [analysisData, persistAnalysisData, sessionId]
-  );
-
   const handleSaveAndRegenerate = useCallback(async () => {
     const normalizedPrompt = promptDraft.trim() || DEFAULT_LAYOUT_IMAGE_PROMPT;
     setLayoutImagePrompt(normalizedPrompt);
@@ -601,7 +553,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
   }, [onRegenerateLayoutImages, promptDraft, sessionId, setLayoutImagePrompt]);
 
   useEffect(() => {
-    if (previewMode !== "image" || !analysisData || analysisData.status === "pending" || candidates.length === 0) {
+    if (previewMode !== "image" || !analysisData || analysisData.status === "pending" || !selectedPlan) {
       setActivePreviewId(null);
       return;
     }
@@ -613,61 +565,54 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
       if (!apiKey) return;
 
       const ai = new GoogleGenAI({ apiKey });
-      let nextCandidates = candidates;
+      if (selectedPlan.previewImageDataUrl || cancelled) {
+        return;
+      }
 
-      for (const candidate of nextCandidates) {
-        if (cancelled || candidate.previewImageDataUrl) {
-          continue;
-        }
+      const promptOverride = getVisualizationPrompt(analysisData) || analysisData.infographicPrompt?.trim() || analysisData.generatedInfographicPrompt?.trim();
+      const previewSignature = JSON.stringify({
+        sessionId: sessionId ?? "layout-preview",
+        model: selectedImageModel,
+        layoutPlanId: selectedPlan.id,
+        promptOverride,
+        layoutPlan: selectedPlan,
+      });
 
-        const promptOverride = getVisualizationPrompt(analysisData) || analysisData.infographicPrompt?.trim() || analysisData.generatedInfographicPrompt?.trim();
-        const previewSignature = JSON.stringify({
-          sessionId: sessionId ?? "layout-preview",
-          model: selectedImageModel,
-          candidateId: candidate.id,
-          promptOverride,
-          layoutPlan: candidate,
-        });
+      if (attemptedPreviewSignaturesRef.current[selectedPlan.id] === previewSignature) {
+        return;
+      }
 
-        if (attemptedPreviewSignaturesRef.current[candidate.id] === previewSignature) {
-          continue;
-        }
+      attemptedPreviewSignaturesRef.current[selectedPlan.id] = previewSignature;
+      setActivePreviewId(selectedPlan.id);
 
-        attemptedPreviewSignaturesRef.current[candidate.id] = previewSignature;
-        setActivePreviewId(candidate.id);
+      try {
+        const previewAnalysisData = buildAnalysisWithSingleLayoutPlan(analysisData, selectedPlan);
+        const previewPrompt = `${buildInfographicContext(previewAnalysisData, promptOverride)}
 
-        try {
-          const previewAnalysisData = buildAnalysisWithLayoutCandidates(analysisData, nextCandidates, candidate.id);
-          const previewPrompt = `${buildInfographicContext(previewAnalysisData, promptOverride)}
-
-이 이미지는 레이아웃 후보 선택용 미리보기입니다.
-위 앱이 계산한 layoutPlan을 최우선으로 따라 인포그래픽을 생성하세요. 섹션 순서, 차트 유형, KPI 블록, 정보 비중 정책은 유지하고, 후보 카드에서 한눈에 비교할 수 있게 전체 구성과 시각적 위계를 뚜렷하게 표현하세요.
+이 이미지는 현재 layoutPlan 미리보기입니다.
+위 앱이 계산한 layoutPlan을 최우선으로 따라 인포그래픽을 생성하세요. 섹션 순서, 차트 유형, KPI 블록, 정보 비중 정책은 유지하고, 전체 구성과 시각적 위계를 뚜렷하게 표현하세요.
 설명 텍스트보다 이미지 생성이 우선이며, 흰 배경의 깔끔한 데이터 인포그래픽 시안으로 출력하세요.`;
 
-          const imageResult = await ai.models.generateContent({
-            model: selectedImageModel,
-            contents: previewPrompt,
-          });
+        const imageResult = await ai.models.generateContent({
+          model: selectedImageModel,
+          contents: previewPrompt,
+        });
 
-          if (cancelled) {
-            delete attemptedPreviewSignaturesRef.current[candidate.id];
-            return;
-          }
-
-          const { generatedImageDataUrl } = extractGeneratedImageResult(imageResult);
-          if (!generatedImageDataUrl) {
-            delete attemptedPreviewSignaturesRef.current[candidate.id];
-            continue;
-          }
-
-          const persistedCandidates = await persistCandidatePreviewImage(candidate.id, generatedImageDataUrl);
-          if (persistedCandidates) {
-            nextCandidates = persistedCandidates;
-          }
-        } catch (error) {
-          delete attemptedPreviewSignaturesRef.current[candidate.id];
-          console.error(error);
+        if (cancelled) {
+          delete attemptedPreviewSignaturesRef.current[selectedPlan.id];
+          return;
         }
+
+        const { generatedImageDataUrl } = extractGeneratedImageResult(imageResult);
+        if (!generatedImageDataUrl) {
+          delete attemptedPreviewSignaturesRef.current[selectedPlan.id];
+          return;
+        }
+
+        await persistLayoutPlanPreviewImage(selectedPlan.id, generatedImageDataUrl);
+      } catch (error) {
+        delete attemptedPreviewSignaturesRef.current[selectedPlan.id];
+        console.error(error);
       }
 
       if (!cancelled) {
@@ -680,7 +625,7 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
     return () => {
       cancelled = true;
     };
-  }, [analysisData, candidates, persistCandidatePreviewImage, previewMode, previewRetryNonce, selectedImageModel, sessionId]);
+  }, [analysisData, persistLayoutPlanPreviewImage, previewMode, previewRetryNonce, selectedImageModel, selectedPlan, sessionId]);
 
   if (isAnalyzing || !analysisData || analysisData.status === "pending") {
     return (
@@ -697,48 +642,15 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
     return <div className="flex h-full items-center justify-center bg-white px-6 text-center text-sm text-gray-500">현재 세션에는 계산된 레이아웃이 없습니다.</div>;
   }
 
-  const candidateItems: LayoutPlanCandidateListItem[] = candidates.map((candidate, index) => {
-    const candidateName = candidate.name || `시안 ${index + 1}`;
-    const roleTagCount = candidate.sections.filter((section) => Boolean(getSectionRolePresentation(section.sectionRole))).length;
-
-    return {
-      id: candidate.id,
-      index,
-      name: candidateName,
-      description: candidate.description || "대시보드 시안",
-      isSelected: selectedPlan.id === candidate.id,
-      isGeneratingPreview: activePreviewId === candidate.id && !candidate.previewImageDataUrl,
-      layoutIntentLabel: getLayoutIntentPresentation(candidate.layoutIntent),
-      chartSectionCount: candidate.sections.filter((section) => section.type === "chart-group").length,
-      roleTagCount,
-      onSelect: () => {
-        void selectCandidate(candidate);
-      },
-      preview: (
-        <LayoutPlanPreview
-          previewMode={previewMode}
-          candidateName={candidateName}
-          previewImageDataUrl={candidate.previewImageDataUrl}
-          htmlPreview={(
-            <LayoutHtmlPreview
-              plan={candidate}
-              analysisData={analysisData}
-              previewDataContext={previewDataContext}
-              compact
-              editable={false}
-            />
-          )}
-          fallbackPreview={<VisualDraftBoard plan={candidate} analysisData={analysisData} compact />}
-        />
-      ),
-    };
-  });
+  const planName = selectedPlan.name || "시안";
+  const roleTagCount = selectedPlan.sections.filter((section) => Boolean(getSectionRolePresentation(section.sectionRole))).length;
+  const isGeneratingPreview = activePreviewId === selectedPlan.id && !selectedPlan.previewImageDataUrl;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-4 py-4 md:px-5 md:py-5">
         <div className="space-y-4">
-          <LayoutPlanControls
+          <LayoutPlanTopSection
             promptDraft={promptDraft}
             isSubmittingPrompt={isSubmittingPrompt}
             isAnalyzing={isAnalyzing}
@@ -754,9 +666,31 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegene
             }}
           />
 
-          <LayoutPlanCandidates
+          <LayoutPlanPreviewSection
             previewMode={previewMode}
-            candidates={candidateItems}
+            planName={planName}
+            description={selectedPlan.description || "저장된 레이아웃 시안"}
+            layoutIntentLabel={getLayoutIntentPresentation(selectedPlan.layoutIntent)}
+            chartSectionCount={selectedPlan.sections.filter((section) => section.type === "chart-group").length}
+            roleTagCount={roleTagCount}
+            isGeneratingPreview={isGeneratingPreview}
+            preview={(
+              <LayoutPlanPreview
+                previewMode={previewMode}
+                candidateName={planName}
+                previewImageDataUrl={selectedPlan.previewImageDataUrl}
+                htmlPreview={(
+                  <LayoutHtmlPreview
+                    plan={selectedPlan}
+                    analysisData={analysisData}
+                    previewDataContext={previewDataContext}
+                    compact
+                    editable={false}
+                  />
+                )}
+                fallbackPreview={<VisualDraftBoard plan={selectedPlan} analysisData={analysisData} compact />}
+              />
+            )}
             onPreviewModeSelect={(mode) => {
               if (mode === "image" && previewMode === "image") {
                 setPreviewRetryNonce((value) => value + 1);

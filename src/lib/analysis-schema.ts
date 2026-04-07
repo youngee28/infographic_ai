@@ -506,6 +506,37 @@ function normalizeLegacyLayoutPlans(value: unknown): z.infer<typeof layoutPlanSc
   return plans.length > 0 ? plans : undefined;
 }
 
+function resolvePreferredLayoutPlan(
+  layoutPlan: z.infer<typeof layoutPlanSchema> | undefined,
+  generatedLayoutPlan: z.infer<typeof layoutPlanSchema> | undefined,
+  generatedLayoutPlans: z.infer<typeof layoutPlanSchema>[] | undefined,
+  selectedLayoutPlanId?: string
+): z.infer<typeof layoutPlanSchema> | undefined {
+  if (layoutPlan) {
+    return layoutPlan;
+  }
+
+  if (generatedLayoutPlans && generatedLayoutPlans.length > 0) {
+    if (selectedLayoutPlanId) {
+      const selectedLayoutPlan = generatedLayoutPlans.find((plan) => plan.id === selectedLayoutPlanId);
+      if (selectedLayoutPlan) {
+        return selectedLayoutPlan;
+      }
+    }
+
+    if (generatedLayoutPlan) {
+      const matchingGeneratedPlan = generatedLayoutPlans.find((plan) => plan.id === generatedLayoutPlan.id);
+      if (matchingGeneratedPlan) {
+        return matchingGeneratedPlan;
+      }
+    }
+
+    return generatedLayoutPlans[0];
+  }
+
+  return generatedLayoutPlan;
+}
+
 export const normalizedTableSchema = z.object({
   sheetName: z.string().optional(),
   columns: z.array(z.string()).default([]),
@@ -934,6 +965,12 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
     const fallbackSelectedLayoutPlanId = typeof raw?.selectedLayoutPlanId === "string" && raw.selectedLayoutPlanId.trim().length > 0
       ? raw.selectedLayoutPlanId.trim()
       : undefined;
+    const preferredFallbackLayoutPlan = resolvePreferredLayoutPlan(
+      fallbackLayoutPlan,
+      fallbackGeneratedLayoutPlan,
+      fallbackGeneratedLayoutPlans,
+      fallbackSelectedLayoutPlanId
+    );
     const fallbackTableCount = rawSheetStructure?.success
       ? rawSheetStructure.data.tableCount
       : rawTableData?.success
@@ -1065,7 +1102,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       generatedLayoutPlans: fallbackGeneratedLayoutPlans,
       selectedLayoutPlanId: fallbackSelectedLayoutPlanId,
       generatedLayoutPlan: fallbackGeneratedLayoutPlan,
-      layoutPlan: fallbackLayoutPlan,
+      layoutPlan: preferredFallbackLayoutPlan,
       generatedInfographicPrompt: "",
       infographicPrompt: "",
       tableContext: rawTableContext,
@@ -1103,6 +1140,12 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
   const normalizedIssues = Array.isArray(data.issues)
     ? data.issues.map((line) => ({ text: line.text, pages: dedupePages(line.pages) }))
     : data.issues;
+  const preferredLayoutPlan = resolvePreferredLayoutPlan(
+    data.layoutPlan,
+    data.generatedLayoutPlan,
+    data.generatedLayoutPlans,
+    data.selectedLayoutPlanId
+  );
 
   return {
       schemaVersion: "3",
@@ -1221,7 +1264,7 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
     generatedLayoutPlans: data.generatedLayoutPlans,
     selectedLayoutPlanId: data.selectedLayoutPlanId,
     generatedLayoutPlan: data.generatedLayoutPlan,
-    layoutPlan: data.layoutPlan,
+    layoutPlan: preferredLayoutPlan,
     generatedInfographicPrompt: data.generatedInfographicPrompt ?? visualizationBrief?.prompt,
     infographicPrompt: data.infographicPrompt ?? visualizationBrief?.prompt,
     tableContext: data.tableContext,

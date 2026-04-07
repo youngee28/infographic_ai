@@ -1,6 +1,18 @@
 import { resolveLogicalTableId, resolveLogicalTableIds } from "@/lib/table-id-resolution";
 import type { AnalysisData, LayoutPlan } from "@/lib/session-types";
 
+function buildChartSignature(plan: LayoutPlan): string {
+  return JSON.stringify(
+    plan.sections.flatMap((section) =>
+      (section.charts ?? []).map((chart) => ({
+        chartType: chart.chartType,
+        dimension: chart.dimension ?? "",
+        metric: chart.metric ?? "",
+      }))
+    )
+  );
+}
+
 export function getSelectedLayoutPlan(
   layoutPlans: LayoutPlan[] | undefined,
   selectedLayoutPlanId?: string,
@@ -15,26 +27,10 @@ export function getSelectedLayoutPlan(
     }
 
     if (fallbackPlan) {
-      const fallbackChartSignature = JSON.stringify(
-        fallbackPlan.sections.flatMap((section) =>
-          (section.charts ?? []).map((chart) => ({
-            chartType: chart.chartType,
-            dimension: chart.dimension ?? "",
-            metric: chart.metric ?? "",
-          }))
-        )
-      );
+      const fallbackChartSignature = buildChartSignature(fallbackPlan);
 
       const semanticallyMatchedPlan = layoutPlans.find((plan) => {
-        const planChartSignature = JSON.stringify(
-          plan.sections.flatMap((section) =>
-            (section.charts ?? []).map((chart) => ({
-              chartType: chart.chartType,
-              dimension: chart.dimension ?? "",
-              metric: chart.metric ?? "",
-            }))
-          )
-        );
+        const planChartSignature = buildChartSignature(plan);
         return planChartSignature === fallbackChartSignature;
       });
 
@@ -50,17 +46,21 @@ export function getSelectedLayoutPlan(
 
 export function resolveSelectedLayoutPlan(analysisData?: AnalysisData | null): LayoutPlan | undefined {
   if (!analysisData) return undefined;
-  return getSelectedLayoutPlan(
-    analysisData.generatedLayoutPlans,
-    analysisData.selectedLayoutPlanId,
-    analysisData.layoutPlan ?? analysisData.generatedLayoutPlan
-  );
+  return analysisData.layoutPlan
+    ?? getSelectedLayoutPlan(
+      analysisData.generatedLayoutPlans,
+      analysisData.selectedLayoutPlanId,
+      analysisData.generatedLayoutPlan
+    )
+    ?? analysisData.generatedLayoutPlan;
 }
 
-export function canonicalizeLayoutPlans(layoutPlans: LayoutPlan[] | undefined, aliases: Map<string, string>): LayoutPlan[] | undefined {
-  return layoutPlans?.map((plan) => ({
-    ...plan,
-    sections: plan.sections.map((section) => ({
+export function canonicalizeLayoutPlan(layoutPlan: LayoutPlan | undefined, aliases: Map<string, string>): LayoutPlan | undefined {
+  if (!layoutPlan) return undefined;
+
+  return {
+    ...layoutPlan,
+    sections: layoutPlan.sections.map((section) => ({
       ...section,
       sourceTableIds: section.sourceTableIds
         ? resolveLogicalTableIds(section.sourceTableIds, aliases)
@@ -74,5 +74,19 @@ export function canonicalizeLayoutPlans(layoutPlans: LayoutPlan[] | undefined, a
         tableId: resolveLogicalTableId(item.tableId, aliases) ?? item.tableId,
       })),
     })),
-  }));
+  };
+}
+
+export function canonicalizeLayoutPlans(layoutPlans: LayoutPlan[] | undefined, aliases: Map<string, string>): LayoutPlan[] | undefined {
+  return layoutPlans?.map((plan) => canonicalizeLayoutPlan(plan, aliases) ?? plan);
+}
+
+export function buildAnalysisWithSingleLayoutPlan(analysisData: AnalysisData, layoutPlan?: LayoutPlan): AnalysisData {
+  return {
+    ...analysisData,
+    generatedLayoutPlans: undefined,
+    selectedLayoutPlanId: undefined,
+    generatedLayoutPlan: undefined,
+    layoutPlan,
+  };
 }
