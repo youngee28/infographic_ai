@@ -20,7 +20,7 @@ import {
 import { GoogleGenAI } from "@google/genai";
 import { GripVertical } from "lucide-react";
 import { useAppStore } from "@/lib/app-store";
-import { getAnalysisTitle, getCautions, getFindings, getLegacyKeywordFallback, getSourceTables, getVisualizationPrompt } from "@/lib/analysis-selectors";
+import { getAnalysisTitle, getFindings, getLegacyKeywordFallback, getSourceTables, getVisualizationPrompt } from "@/lib/analysis-selectors";
 import { buildInfographicContext, extractGeneratedImageResult } from "@/lib/infographic-generation";
 import { DEFAULT_LAYOUT_IMAGE_PROMPT } from "@/lib/layout-image-prompts";
 import { buildLayoutTreeFromPlan, projectLayoutPlanFromTree, reorderLayoutTreeRoots, updateLayoutTreeBlock } from "./layout-tree";
@@ -2381,7 +2381,6 @@ function HtmlSectionPreview({
   const noteText =
     section.note ||
     getFindings(analysisData)[0]?.text ||
-    getCautions(analysisData)[0]?.text ||
     getLegacyKeywordFallback(analysisData).slice(0, 3).join(" · ") ||
     "핵심 시사점을 짧게 요약하는 영역";
 
@@ -2553,7 +2552,6 @@ function LayoutHtmlPreview({
     (editable ? editableHeaderSummaryBlock?.content.text : undefined) ||
     plan.description ||
     getFindings(analysisData)[0]?.text ||
-    getCautions(analysisData)[0]?.text ||
     getLegacyKeywordFallback(analysisData).slice(0, 3).join(" · ") ||
     "표 데이터를 기반으로 재구성한 레이아웃 미리보기";
 

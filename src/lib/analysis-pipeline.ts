@@ -166,13 +166,11 @@ export function mergeTableInterpretations(
 ): Partial<AnalysisData> {
   const findings = deduplicateNarratives(results.flatMap((result) => result.findings));
   const implications = deduplicateNarratives(results.flatMap((result) => result.implications));
-  const cautions = deduplicateNarratives(results.flatMap((result) => result.cautions));
 
   return {
     sheetStructure: structure.sheetStructure,
     findings,
     implications,
-    cautions,
     generatedInfographicPrompt: results.find((result) => result.infographicPrompt?.trim())?.infographicPrompt,
     infographicPrompt: results.find((result) => result.infographicPrompt?.trim())?.infographicPrompt,
     tableInterpretations: results,

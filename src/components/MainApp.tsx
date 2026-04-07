@@ -352,7 +352,6 @@ function canonicalizeInterpretationResults(
     tableId: resolveLogicalTableId(result.tableId, aliases) ?? result.tableId,
     findings: canonicalizeNarrativeItems(result.findings, aliases),
     implications: canonicalizeNarrativeItems(result.implications, aliases),
-    cautions: canonicalizeNarrativeItems(result.cautions, aliases),
   }));
 }
 
@@ -413,7 +412,7 @@ function buildStructurePrompt(rawGridText: string, tableData?: TableData) {
   return `당신은 스프레드시트 구조 분석기입니다.
 
 중요:
-- 의미 해석, findings, implications, cautions, 차트 추천, 인포그래픽 문구 생성은 절대 하지 마세요.
+- 의미 해석, findings, implications, 차트 추천, 인포그래픽 문구 생성은 절대 하지 마세요.
 - 오직 표 구조만 판정하세요.
 - row/col 번호는 1-indexed입니다. R1C1이 시트의 첫 번째 셀입니다.
 - 첫 번째 비어있지 않은 행을 무조건 헤더로 가정하지 마세요.
@@ -511,7 +510,6 @@ ${modeInstructions}
   "tableId": "${table.id}",
   "findings": [{ "text": "핵심 발견", "sourceTableIds": ["${table.id}"], "evidence": [], "priority": "high" }],
   "implications": [{ "text": "실무 시사점", "sourceTableIds": ["${table.id}"], "evidence": [], "audience": "business" }],
-  "cautions": [{ "text": "해석상 유의점", "sourceTableIds": ["${table.id}"], "evidence": [] }],
   "insight": "표 맥락을 반영한 짧은 인사이트 1문장",
   "significantNumbers": ["LOCAL_FACTS에 있는 비교/비중/변화량을 근거로 한 문장 1", "LOCAL_FACTS에 있는 비교/비중/변화량을 근거로 한 문장 2"],
   "layoutPlans": [],
@@ -563,7 +561,6 @@ function createPendingAnalysis(fileName: string, tableData: TableData): Analysis
       sourceInventory: buildSourceInventory(fileName, tableData),
       findings: [],
       implications: [],
-      cautions: [],
       askNext: [],
       summaries: [],
       keywords: [],
@@ -664,13 +661,6 @@ function createUnsupportedAnalysis(fileName: string): AnalysisData {
           audience: "general",
         },
       ],
-      cautions: [
-        {
-          text: "이 세션은 이전 형식으로 저장되어 표 인사이트 워크스페이스에 바로 복원할 수 없습니다.",
-          sourceTableIds: [],
-          evidence: [],
-        },
-      ],
       askNext: [],
       summaries: [
         {
@@ -721,7 +711,6 @@ function mergeAnalysisSeed(fileName: string, source: AnalysisData): AnalysisData
     sourceInventory: source.sourceInventory ?? pending.sourceInventory,
     findings: source.findings ?? pending.findings,
     implications: source.implications ?? pending.implications,
-    cautions: source.cautions ?? pending.cautions,
     askNext: source.askNext ?? pending.askNext,
     visualizationBrief: source.visualizationBrief ?? pending.visualizationBrief,
     chartRecommendations: source.chartRecommendations && source.chartRecommendations.length > 0
@@ -1088,7 +1077,6 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
             reviewReasons: [structureValidation.reason || "sheetStructure missing"],
             findings: [],
             implications: [],
-            cautions: [{ text: structureValidation.reason || "sheetStructure missing", sourceTableIds: [], evidence: [] }],
             issues: structureValidation.reason || "sheetStructure missing",
             chartRecommendations,
             selectedSourceTableIds,
@@ -1134,7 +1122,6 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
             reviewReasons,
             findings: [],
             implications: [],
-            cautions: reviewReasons.map((reason) => ({ text: reason, sourceTableIds: [], evidence: [] })),
             issues: reviewReasons.join("\n"),
             chartRecommendations,
             selectedSourceTableIds,
@@ -1221,7 +1208,6 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
           chartRecommendations,
           findings: merged.findings,
           implications: merged.implications,
-          cautions: merged.cautions,
         }),
         tableIdAliases
       );

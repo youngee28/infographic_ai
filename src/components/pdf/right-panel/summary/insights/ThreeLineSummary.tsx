@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { FileText } from "lucide-react";
 import type { ReferenceLine, SummaryVariant } from "@/lib/session-types";
-import { MarkdownRenderer } from "../../shared/MarkdownRenderer";
-import { CitationBadge } from "../../shared/CitationBadge";
+import { MarkdownRenderer } from "../../../shared/MarkdownRenderer";
+import { CitationBadge } from "../../../shared/CitationBadge";
 
 interface Props {
   summary?: SummaryVariant;

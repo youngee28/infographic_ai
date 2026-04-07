@@ -517,10 +517,6 @@ export function getImplications(analysisData?: AnalysisData | null): NarrativeIt
   return deriveNarrativeItems(analysisData?.implications, analysisData?.summaries[1]);
 }
 
-export function getCautions(analysisData?: AnalysisData | null): NarrativeItem[] {
-  return deriveNarrativeItems(analysisData?.cautions, undefined, analysisData?.issues);
-}
-
 export function getAskNext(analysisData?: AnalysisData | null): string[] {
   if (analysisData?.askNext && analysisData.askNext.length > 0) {
     return compactUnique(analysisData.askNext).slice(0, 3);
@@ -658,12 +654,6 @@ export function getImplicationsSummaryVariant(analysisData?: AnalysisData | null
   const lines = narrativeToLines(getImplications(analysisData)).slice(0, 4);
   if (lines.length === 0) return analysisData?.summaries[1];
   return { title: "실무 시사점", lines };
-}
-
-export function getCautionReferenceLines(analysisData?: AnalysisData | null): string | ReferenceLine[] {
-  const lines = narrativeToLines(getCautions(analysisData));
-  if (lines.length > 0) return lines;
-  return analysisData?.issues ?? "";
 }
 
 export function getLegacyKeywordFallback(analysisData?: AnalysisData | null): string[] {

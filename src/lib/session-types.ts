@@ -88,7 +88,6 @@ export interface TableInterpretationResult {
   tableId: string;
   findings: NarrativeItem[];
   implications: NarrativeItem[];
-  cautions: NarrativeItem[];
   insight?: string;
   significantNumbers?: string[];
   layoutPlans?: LayoutPlan[];
@@ -382,7 +381,6 @@ export interface AnalysisData {
   };
   findings?: NarrativeItem[];
   implications?: NarrativeItem[];
-  cautions?: NarrativeItem[];
   askNext?: string[];
   visualizationBrief?: VisualizationBrief;
   summaries: SummaryVariant[];

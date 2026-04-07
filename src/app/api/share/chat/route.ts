@@ -3,7 +3,7 @@ import { z } from "zod";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import { normalizeAnalysisData } from "@/lib/analysis-schema";
-import { getAnalysisTitle, getCautions, getDatasetSummary, getFindings, getSourceTables } from "@/lib/analysis-selectors";
+import { getAnalysisTitle, getDatasetSummary, getFindings, getSourceTables } from "@/lib/analysis-selectors";
 import { consumeChatQuota } from "@/lib/db/share-repository";
 
 dotenv.config({ path: ".env", override: true });
@@ -29,7 +29,6 @@ function buildSharedContext(payload: Record<string, unknown>): string {
   const title = getAnalysisTitle(analysisData, fileName);
   const summary = getDatasetSummary(analysisData);
   const findings = getFindings(analysisData).map((item) => item.text);
-  const cautions = getCautions(analysisData).map((item) => item.text);
   const tables = getSourceTables(analysisData);
 
   return [
@@ -37,7 +36,6 @@ function buildSharedContext(payload: Record<string, unknown>): string {
     summary ? `요약: ${summary}` : "",
     tables.length ? `표 구성: ${tables.map((table) => `${table.name}(${table.role})`).join(" | ")}` : "",
     findings.length ? `핵심 신호: ${findings.slice(0, 6).join(" | ")}` : "",
-    cautions.length ? `주의 포인트: ${cautions.slice(0, 4).join(" | ")}` : "",
   ]
     .filter(Boolean)
     .join("\n");

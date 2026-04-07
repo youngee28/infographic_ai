@@ -6,7 +6,6 @@ import { useAppStore } from "@/lib/app-store";
 import {
   getAnalysisTitle,
   getAskNext,
-  getCautions,
   getDatasetSummary,
   getFindings,
   getImplications,
@@ -14,9 +13,9 @@ import {
 } from "@/lib/analysis-selectors";
 import { store } from "@/lib/store";
 import type { AnalysisData } from "@/lib/session-types";
-import { ChatInput } from "./ChatInput";
-import { ChatTimeline } from "./ChatTimeline";
-import { RecommendedQuestions } from "./RecommendedQuestions";
+import { ChatInput } from "./chat/ChatInput";
+import { ChatTimeline } from "./chat/ChatTimeline";
+import { RecommendedQuestions } from "./chat/RecommendedQuestions";
 import { RightPanelAnalysis } from "./RightPanelAnalysis";
 
 const buildContextText = (analysisData: AnalysisData | null) => {
@@ -25,7 +24,6 @@ const buildContextText = (analysisData: AnalysisData | null) => {
   const tables = getSourceTables(analysisData);
   const findingText = getFindings(analysisData).map((item) => item.text);
   const implicationText = getImplications(analysisData).map((item) => item.text);
-  const cautionText = getCautions(analysisData).map((item) => item.text);
 
   const formatTableRole = (role: ReturnType<typeof getSourceTables>[number]["role"]) => {
     switch (role) {
@@ -51,7 +49,6 @@ const buildContextText = (analysisData: AnalysisData | null) => {
     }).join(" | ")}` : "",
     findingText.length > 0 ? `핵심 신호: ${findingText.slice(0, 5).join(" | ")}` : "",
     implicationText.length > 0 ? `실무 시사점: ${implicationText.slice(0, 4).join(" | ")}` : "",
-    cautionText.length > 0 ? `해석상 유의점: ${cautionText.slice(0, 4).join(" | ")}` : "",
   ].join("\n").trim();
 };
 

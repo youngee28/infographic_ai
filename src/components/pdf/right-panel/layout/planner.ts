@@ -15,7 +15,6 @@ interface BuildDeterministicLayoutPlanParams {
   chartRecommendations?: ChartRecommendation[];
   findings?: NarrativeItem[];
   implications?: NarrativeItem[];
-  cautions?: NarrativeItem[];
 }
 
 function normalizeText(value?: string | null): string | undefined {
@@ -129,7 +128,6 @@ export function buildDeterministicLayoutPlans(params: BuildDeterministicLayoutPl
 
   const chartTableIds = chartSections.flatMap((section) => section.sourceTableIds ?? []);
   const takeaway = pickNarrative(params.findings ?? params.implications, chartTableIds);
-  const caution = pickNarrative(params.cautions, chartTableIds);
 
   const sections: LayoutSection[] = [{
     id: "section-header",
@@ -148,17 +146,6 @@ export function buildDeterministicLayoutPlans(params: BuildDeterministicLayoutPl
       sourceTableIds: takeaway.sourceTableIds,
       title: "핵심 해석",
       note: takeaway.text,
-    });
-  }
-
-  if (caution) {
-    sections.push({
-      id: "section-note",
-      type: "note",
-      sectionRole: "CONTEXT",
-      sourceTableIds: caution.sourceTableIds,
-      title: "해석 시 유의점",
-      note: caution.text,
     });
   }
 

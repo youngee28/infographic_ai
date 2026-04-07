@@ -2,7 +2,6 @@ import { resolveSelectedLayoutPlan } from "@/components/pdf/right-panel/layout/s
 import type { AnalysisData, LayoutPlan } from "@/lib/session-types";
 import {
   getAnalysisTitle,
-  getCautions,
   getFindings,
   getImplications,
   getSourceTables,
@@ -45,7 +44,6 @@ export function buildInfographicContext(analysisData?: AnalysisData | null, prom
   const scopedTables = effectiveTables.length > 0 ? effectiveTables : tables;
   const findings = getFindings(analysisData).map((item) => item.text);
   const implications = getImplications(analysisData).map((item) => item.text);
-  const cautions = getCautions(analysisData).map((item) => item.text);
   const brief = getVisualizationBrief(analysisData);
 
   const activeLayoutPlan = getSelectedLayoutPlan(analysisData);
@@ -78,7 +76,6 @@ export function buildInfographicContext(analysisData?: AnalysisData | null, prom
     layoutPlanContext ? `앱이 계산한 레이아웃 계획:\n${layoutPlanContext}` : "",
     findings.length > 0 ? `핵심 신호: ${findings.slice(0, 6).join(" | ")}` : "",
     implications.length > 0 ? `실무 시사점: ${implications.slice(0, 4).join(" | ")}` : "",
-    cautions.length > 0 ? `주의 포인트: ${cautions.slice(0, 4).join(" | ")}` : "",
     brief?.headline ? `헤드라인: ${brief.headline}` : "",
     brief?.coreMessage ? `핵심 메시지: ${brief.coreMessage}` : "",
     brief?.storyFlow.length ? `스토리 흐름: ${brief.storyFlow.join(" -> ")}` : "",

@@ -1,6 +1,5 @@
 import type { AnalysisData } from "@/lib/session-types";
 import {
-  getCautionReferenceLines,
   getFindingsSummaryVariant,
   getImplicationsSummaryVariant,
   getTableInsightCards,
@@ -8,13 +7,12 @@ import {
   getSourceTables,
   getTableRelations,
 } from "@/lib/analysis-selectors";
-import { CheckPoints } from "./CheckPoints";
-import { DetailedSummary } from "./DetailedSummary";
-import { ReviewBanner } from "./ReviewBanner";
-import { SourceInventoryPanel } from "./SourceInventoryPanel";
-import { TableContextCaption } from "./TableContextCaption";
-import { TableInfographicFocusPanel } from "./TableInfographicFocusPanel";
-import { ThreeLineSummary } from "./ThreeLineSummary";
+import { TableContextCaption } from "./chart/TableContextCaption";
+import { ReviewBanner } from "./info/ReviewBanner";
+import { SourceInventoryPanel } from "./info/SourceInventoryPanel";
+import { DetailedSummary } from "./insights/DetailedSummary";
+import { TableInfographicFocusPanel } from "./insights/TableInfographicFocusPanel";
+import { ThreeLineSummary } from "./insights/ThreeLineSummary";
 
 interface RightPanelAnalysisProps {
   analysisData: AnalysisData;
@@ -32,7 +30,6 @@ export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanel
   const tableChartRecommendationCaptionItems = getTableChartRecommendationCaptionItems(analysisData);
   const findingsSummary = getFindingsSummaryVariant(analysisData);
   const implicationsSummary = getImplicationsSummaryVariant(analysisData);
-  const cautions = getCautionReferenceLines(analysisData);
 
   return (
     <>
@@ -42,7 +39,6 @@ export function RightPanelAnalysis({ analysisData, onCitationClick }: RightPanel
       <TableInfographicFocusPanel cards={tableInsightCards} />
       <ThreeLineSummary summary={findingsSummary} onCitationClick={onCitationClick} />
       <DetailedSummary summary={implicationsSummary} onCitationClick={onCitationClick} />
-      <CheckPoints issues={cautions} onCitationClick={onCitationClick} />
     </>
   );
 }

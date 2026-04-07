@@ -291,7 +291,6 @@ export const tableInterpretationResultSchema = z.object({
   tableId: z.string().trim().min(1),
   findings: z.array(narrativeItemSchema).default([]),
   implications: z.array(narrativeItemSchema).default([]),
-  cautions: z.array(narrativeItemSchema).default([]),
   insight: z.string().trim().optional(),
   significantNumbers: z.array(z.string().trim().min(1)).default([]),
   layoutPlans: z.array(layoutPlanSchema).optional(),
@@ -603,7 +602,6 @@ export const analysisDataSchema = z.object({
   }).optional(),
   findings: z.array(narrativeItemSchema).optional(),
   implications: z.array(narrativeItemSchema).optional(),
-  cautions: z.array(narrativeItemSchema).optional(),
   askNext: z.array(z.string().trim().min(1)).max(3).optional(),
   visualizationBrief: visualizationBriefSchema.optional(),
   summaries: z.array(summaryVariantSchema).default([]),
@@ -1054,7 +1052,6 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       },
       findings: [],
       implications: [],
-      cautions: [],
       askNext: [],
       visualizationBrief: undefined,
       summaries: [],
@@ -1099,17 +1096,13 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
   const sourceInventory = deriveSourceInventory(data, title);
   const findings = deriveNarrativeItems(data.findings, data.summaries[0]);
   const implications = deriveNarrativeItems(data.implications, data.summaries[1]);
-  const cautions = deriveNarrativeItems(data.cautions, undefined, data.issues);
   const askNext = data.askNext && data.askNext.length > 0 ? compactUnique(data.askNext).slice(0, 3) : parseLegacyQuestions(data.insights);
   const visualizationBrief = deriveVisualizationBrief(data, title, sourceInventory.tables[0]?.id ?? "table-1");
   const summaryLines = narrativeLines(findings).slice(0, 3);
   const implicationLines = narrativeLines(implications).slice(0, 4);
-  const cautionLines = narrativeLines(cautions);
-  const normalizedIssues = cautionLines.length > 0
-    ? cautionLines
-    : Array.isArray(data.issues)
-      ? data.issues.map((line) => ({ text: line.text, pages: dedupePages(line.pages) }))
-      : data.issues;
+  const normalizedIssues = Array.isArray(data.issues)
+    ? data.issues.map((line) => ({ text: line.text, pages: dedupePages(line.pages) }))
+    : data.issues;
 
   return {
       schemaVersion: "3",
@@ -1202,7 +1195,6 @@ export function normalizeAnalysisData(input: unknown, fallbackTitle: string): An
       sourceInventory,
     findings,
     implications,
-    cautions,
     askNext,
     visualizationBrief,
     summaries: [
