@@ -14,7 +14,7 @@ import {
   type LayoutModel,
   type QnaModel,
 } from "@/lib/ai-models";
-import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-image-prompts";
+import { DEFAULT_LAYOUT_IMAGE_PROMPT } from "@/lib/layout-image-prompts";
 import type { Message } from "@/lib/store";
 
 interface AppStoreState {
@@ -31,7 +31,7 @@ interface AppStoreState {
   selectedQnaModel: QnaModel;
   selectedLayoutModel: LayoutModel;
   selectedImageModel: ImageModel;
-  layoutSystemPrompt: string;
+  layoutImagePrompt: string;
   chatMessagesBySession: Record<string, Message[]>;
   setFileUrl: (fileUrl: string | null) => void;
   setIsAnalyzing: (isAnalyzing: boolean) => void;
@@ -46,7 +46,7 @@ interface AppStoreState {
   setSelectedQnaModel: (model: QnaModel) => void;
   setSelectedLayoutModel: (model: LayoutModel) => void;
   setSelectedImageModel: (model: ImageModel) => void;
-  setLayoutSystemPrompt: (prompt: string) => void;
+  setLayoutImagePrompt: (prompt: string) => void;
   setChatMessagesForSession: (sessionId: string, messages: Message[]) => void;
   resetViewState: () => void;
 }
@@ -68,7 +68,7 @@ export const useAppStore = create<AppStoreState>()(
         selectedQnaModel: DEFAULT_QNA_MODEL,
         selectedLayoutModel: DEFAULT_LAYOUT_MODEL,
         selectedImageModel: DEFAULT_IMAGE_MODEL,
-        layoutSystemPrompt: DEFAULT_LAYOUT_SYSTEM_PROMPT,
+        layoutImagePrompt: DEFAULT_LAYOUT_IMAGE_PROMPT,
         chatMessagesBySession: {},
         setFileUrl: (fileUrl) => set({ fileUrl }, false, "app/setFileUrl"),
         setIsAnalyzing: (isAnalyzing) => set({ isAnalyzing }, false, "app/setIsAnalyzing"),
@@ -83,7 +83,7 @@ export const useAppStore = create<AppStoreState>()(
         setSelectedQnaModel: (selectedQnaModel) => set({ selectedQnaModel }, false, "app/setSelectedQnaModel"),
         setSelectedLayoutModel: (selectedLayoutModel) => set({ selectedLayoutModel }, false, "app/setSelectedLayoutModel"),
         setSelectedImageModel: (selectedImageModel) => set({ selectedImageModel }, false, "app/setSelectedImageModel"),
-        setLayoutSystemPrompt: (layoutSystemPrompt) => set({ layoutSystemPrompt }, false, "app/setLayoutSystemPrompt"),
+        setLayoutImagePrompt: (layoutImagePrompt) => set({ layoutImagePrompt }, false, "app/setLayoutImagePrompt"),
         setChatMessagesForSession: (sessionId, messages) =>
           set((state) => {
             const chatMessagesBySession = { ...state.chatMessagesBySession };
@@ -113,7 +113,7 @@ export const useAppStore = create<AppStoreState>()(
           selectedQnaModel: isQnaModel(state.selectedQnaModel) ? state.selectedQnaModel : DEFAULT_QNA_MODEL,
           selectedLayoutModel: isLayoutModel(state.selectedLayoutModel) ? state.selectedLayoutModel : DEFAULT_LAYOUT_MODEL,
           selectedImageModel: isImageModel(state.selectedImageModel) ? state.selectedImageModel : DEFAULT_IMAGE_MODEL,
-          layoutSystemPrompt: state.layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT,
+          layoutImagePrompt: state.layoutImagePrompt?.trim() || DEFAULT_LAYOUT_IMAGE_PROMPT,
           // 대용량 데이터는 localStorage에 저장하지 않음:
           // - sessions (IndexedDB에만 저장)
           // - analysisData (IndexedDB에만 저장)

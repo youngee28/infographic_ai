@@ -1,4 +1,4 @@
-export const DEFAULT_LAYOUT_SYSTEM_PROMPT = `앱이 계산한 layoutPlan을 우선 따르세요.
+export const DEFAULT_LAYOUT_IMAGE_PROMPT = `앱이 계산한 layoutPlan을 우선 따르세요.
 
 - 섹션 순서와 차트 유형, KPI/텍스트 비중은 유지합니다.
 - 사용자의 최신 요청은 스타일, 강조 포인트, 색감, 아이콘, 타이포그래피 같은 시각 연출에 반영합니다.

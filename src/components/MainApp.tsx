@@ -10,7 +10,7 @@ import { useAppStore } from "@/lib/app-store";
 import { normalizeAnalysisData } from "@/lib/analysis-schema";
 import { mergeTableInterpretations, validateSheetStructure } from "@/lib/analysis-pipeline";
 import { buildChartRecommendationsForLogicalTables, rerankLayoutPlansByRecommendations } from "@/lib/chart-recommendation";
-import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-image-prompts";
+import { DEFAULT_LAYOUT_IMAGE_PROMPT } from "@/lib/layout-image-prompts";
 import { buildLogicalTableIdAliasMap, resolveLogicalTableId, resolveLogicalTableIds } from "@/lib/table-id-resolution";
 import { store, type TableSession } from "@/lib/store";
 import type {
@@ -765,7 +765,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
   const setPendingFile = useAppStore((state) => state.setPendingFile);
   const currentFileName = useAppStore((state) => state.currentFileName);
   const setCurrentFileName = useAppStore((state) => state.setCurrentFileName);
-  const layoutSystemPrompt = useAppStore((state) => state.layoutSystemPrompt);
+  const layoutImagePrompt = useAppStore((state) => state.layoutImagePrompt);
   const selectedLayoutModel = useAppStore((state) => state.selectedLayoutModel);
   const [sessions, setSessions] = useState<TableSession[]>([]);
   const [currentRawSheetGrid, setCurrentRawSheetGrid] = useState<RawSheetGrid | null>(null);
@@ -1197,7 +1197,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
       ), tableIdAliases);
 
       const merged = mergeTableInterpretations({ sheetStructure: enrichedSheetStructure }, interpretationResults);
-      const layoutPromptInstruction = options?.imagePromptOverride?.trim() || layoutSystemPrompt?.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
+      const layoutImagePromptInstruction = options?.imagePromptOverride?.trim() || layoutImagePrompt?.trim() || DEFAULT_LAYOUT_IMAGE_PROMPT;
       const layoutTableBriefs = buildLayoutTableBriefs({
         sheetStructure: enrichedSheetStructure,
         sourceTables: sourceInventory.tables,
@@ -1237,7 +1237,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
         baseAnalysis.selectedLayoutPlanId,
         baseAnalysis.layoutPlan ?? baseAnalysis.generatedLayoutPlan
       );
-      const generatedInfographicPrompt = options?.imagePromptOverride?.trim() || merged.infographicPrompt || baseAnalysis.generatedInfographicPrompt || baseAnalysis.infographicPrompt || layoutPromptInstruction;
+      const generatedInfographicPrompt = options?.imagePromptOverride?.trim() || merged.infographicPrompt || baseAnalysis.generatedInfographicPrompt || baseAnalysis.infographicPrompt || layoutImagePromptInstruction;
       const rawAnalysis = {
         ...baseAnalysis,
         ...merged,
@@ -1284,7 +1284,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
     }
   };
 
-  const handleRebuildLayoutPlans = async (imagePromptOverride: string) => {
+  const handleRegenerateLayoutImages = async (imagePromptOverride: string) => {
     if (!currentSessionId) return;
 
     const session = await store.getSession(currentSessionId);
@@ -1532,7 +1532,7 @@ export function MainApp({ initialSessionId }: { initialSessionId?: string }) {
                   isAnalyzing={isAnalyzing}
                   sessionId={currentSessionId}
                   fileName={panelTitle}
-              onRebuildLayoutPlans={handleRebuildLayoutPlans}
+              onRegenerateLayoutImages={handleRegenerateLayoutImages}
                   onCitationClick={handleCitationClick}
                 />
               </Panel>

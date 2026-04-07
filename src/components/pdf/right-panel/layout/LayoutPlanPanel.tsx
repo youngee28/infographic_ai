@@ -17,13 +17,12 @@ import {
   PointElement,
   Tooltip,
 } from "chart.js";
-import Image from "next/image";
 import { GoogleGenAI } from "@google/genai";
-import { GripVertical, RotateCcw } from "lucide-react";
+import { GripVertical } from "lucide-react";
 import { useAppStore } from "@/lib/app-store";
 import { getAnalysisTitle, getCautions, getFindings, getLegacyKeywordFallback, getSourceTables, getVisualizationPrompt } from "@/lib/analysis-selectors";
 import { buildInfographicContext, extractGeneratedImageResult } from "@/lib/infographic-generation";
-import { DEFAULT_LAYOUT_SYSTEM_PROMPT } from "@/lib/layout-image-prompts";
+import { DEFAULT_LAYOUT_IMAGE_PROMPT } from "@/lib/layout-image-prompts";
 import { buildLayoutTreeFromPlan, projectLayoutPlanFromTree, reorderLayoutTreeRoots, updateLayoutTreeBlock } from "./layout-tree";
 import { store } from "@/lib/store";
 import { buildLayoutAxisMetadata } from "@/lib/table-utils";
@@ -45,6 +44,9 @@ import type {
   LayoutSectionType,
   LayoutTextBlock,
 } from "@/lib/session-types";
+import { LayoutPlanControls } from "./LayoutPlanControls";
+import { LayoutPlanCandidates, type LayoutPlanCandidateListItem } from "./LayoutPlanCandidates";
+import { LayoutPlanPreview, type PreviewMode } from "./LayoutPlanPreview";
 
 const SECTION_TYPE_LABELS: Record<LayoutSectionType, string> = {
   header: "헤더",
@@ -127,7 +129,6 @@ function SectionRoleBadge({ role, compact = false }: { role?: string | null; com
   );
 }
 
-type PreviewMode = "html" | "image";
 type PreviewCanvasType = "bar" | "line" | "doughnut" | "pie";
 type PreviewColumnKind = "text" | "number" | "currency" | "percent" | "date";
 
@@ -226,12 +227,6 @@ const PREVIEW_ASPECT_RATIOS: Record<NonNullable<LayoutPlan["aspectRatio"]>, stri
 const PREVIEW_SERIES_COLORS = ["#2563eb", "#0ea5e9", "#f97316", "#14b8a6", "#8b5cf6", "#ef4444"];
 const MIN_LAYOUT_WIDTH = 18;
 const MIN_LAYOUT_HEIGHT = 12;
-const MIN_TITLE_BLOCK_WIDTH = 32;
-const MIN_TITLE_BLOCK_HEIGHT = 18;
-const MIN_HEADER_TITLE_WIDTH = 42;
-const MIN_HEADER_TITLE_HEIGHT = 44;
-const MIN_HEADER_SUMMARY_WIDTH = 48;
-const MIN_HEADER_SUMMARY_HEIGHT = 24;
 
 type ResizeHandleDirection = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
@@ -319,7 +314,7 @@ interface LayoutPlanPanelProps {
   sessionId?: string | null;
   analysisData: AnalysisData | null;
   isAnalyzing?: boolean;
-  onRebuildLayoutPlans?: (imagePromptOverride: string) => Promise<void>;
+  onRegenerateLayoutImages?: (imagePromptOverride: string) => Promise<void>;
 }
 
 function cloneLayoutPlan(layoutPlan?: LayoutPlan | null): LayoutPlan | null {
@@ -394,89 +389,6 @@ function resolveInteractionSurfaceMetrics(target: EventTarget | null): { width: 
     width: surface.clientWidth,
     height: surface.clientHeight,
   };
-}
-
-function buildSectionTitleLayout(section: LayoutSection): LayoutGeometry {
-  return section.type === "chart-group" || section.type === "kpi-group"
-    ? { x: 0, y: 0, width: 38, height: 18 }
-    : { x: 0, y: 0, width: 44, height: 18 };
-}
-
-function buildCompactSectionTitleLayout(section: LayoutSection): LayoutGeometry {
-  return section.type === "chart-group" || section.type === "kpi-group"
-    ? { x: 0, y: 0, width: 58, height: 9 }
-    : { x: 0, y: 0, width: 62, height: 10 };
-}
-
-function buildLegacySectionTitleLayout(section: LayoutSection): LayoutGeometry {
-  return section.type === "chart-group" || section.type === "kpi-group"
-    ? { x: 0, y: 0, width: 64, height: 12 }
-    : { x: 0, y: 0, width: 70, height: 14 };
-}
-
-function normalizeTitleLayout(layout: LayoutGeometry | undefined, fallback: LayoutGeometry): LayoutGeometry {
-  const source = layout ?? fallback;
-  const x = clampPercent(source.x, 0, 100);
-  const y = clampPercent(source.y, 0, 100);
-  return {
-    ...source,
-    x,
-    y,
-    width: clampPercent(source.width, MIN_TITLE_BLOCK_WIDTH, Math.max(MIN_TITLE_BLOCK_WIDTH, 100 - x)),
-    height: clampPercent(source.height, MIN_TITLE_BLOCK_HEIGHT, Math.max(MIN_TITLE_BLOCK_HEIGHT, 100 - y)),
-  };
-}
-
-function normalizeHeaderLayout(layout: LayoutGeometry | undefined, fallback: LayoutGeometry, minimumWidth: number, minimumHeight: number): LayoutGeometry {
-  const source = layout ?? fallback;
-  const x = clampPercent(source.x, 0, 100);
-  const y = clampPercent(source.y, 0, 100);
-  return {
-    ...source,
-    x,
-    y,
-    width: clampPercent(source.width, minimumWidth, Math.max(minimumWidth, 100 - x)),
-    height: clampPercent(source.height, minimumHeight, Math.max(minimumHeight, 100 - y)),
-  };
-}
-
-function buildSectionNoteLayout(): LayoutGeometry {
-  return { x: 0, y: 14, width: 100, height: 76 };
-}
-
-function buildDefaultChartLayouts(chartCount: number, aspectRatio: LayoutPlan["aspectRatio"]): LayoutGeometry[] {
-  const y = 14;
-  const availableHeight = 84;
-  if (chartCount <= 1 || aspectRatio === "portrait") {
-    const gap = 3;
-    const height = (availableHeight - gap * Math.max(chartCount - 1, 0)) / Math.max(chartCount, 1);
-    return Array.from({ length: chartCount }, (_, index) => ({ x: 0, y: y + index * (height + gap), width: 100, height }));
-  }
-
-  const columns = 2;
-  const rows = Math.ceil(chartCount / columns);
-  const gapX = 3;
-  const gapY = 3;
-  const width = (100 - gapX) / 2;
-  const height = (availableHeight - gapY * Math.max(rows - 1, 0)) / Math.max(rows, 1);
-  return Array.from({ length: chartCount }, (_, index) => ({
-    x: (index % columns) * (width + gapX),
-    y: y + Math.floor(index / columns) * (height + gapY),
-    width,
-    height,
-  }));
-}
-
-function buildDefaultKpiLayouts(itemCount: number): LayoutGeometry[] {
-  const count = Math.max(itemCount, 1);
-  const gap = 2.5;
-  const width = (100 - gap * Math.max(count - 1, 0)) / count;
-  return Array.from({ length: itemCount }, (_, index) => ({
-    x: index * (width + gap),
-    y: 14,
-    width,
-    height: 68,
-  }));
 }
 
 function isSameLayout(left: LayoutGeometry | undefined, right: LayoutGeometry): boolean {
@@ -565,14 +477,14 @@ function buildAnalysisWithLayoutCandidates(
   };
 }
 
-export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRebuildLayoutPlans }: LayoutPlanPanelProps) {
+export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRegenerateLayoutImages }: LayoutPlanPanelProps) {
   const setAnalysisData = useAppStore((s) => s.setAnalysisData);
-  const layoutSystemPrompt = useAppStore((s) => s.layoutSystemPrompt);
-  const setLayoutSystemPrompt = useAppStore((s) => s.setLayoutSystemPrompt);
+  const layoutImagePrompt = useAppStore((s) => s.layoutImagePrompt);
+  const setLayoutImagePrompt = useAppStore((s) => s.setLayoutImagePrompt);
   const selectedImageModel = useAppStore((s) => s.selectedImageModel);
   const candidates = useMemo(() => resolveLayoutPlans(analysisData), [analysisData]);
   const selectedPlan = useMemo(() => getSelectedPlan(analysisData, candidates), [analysisData, candidates]);
-  const [promptDraft, setPromptDraft] = useState(layoutSystemPrompt);
+  const [promptDraft, setPromptDraft] = useState(layoutImagePrompt);
   const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false);
   const [selectedSourceTableIds, setSelectedSourceTableIds] = useState<string[]>([]);
   const [activePreviewId, setActivePreviewId] = useState<string | null>(null);
@@ -583,8 +495,8 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRebuil
   const sourceTables = useMemo(() => getSourceTables(analysisData), [analysisData]);
 
   useEffect(() => {
-    setPromptDraft(layoutSystemPrompt);
-  }, [layoutSystemPrompt]);
+    setPromptDraft(layoutImagePrompt);
+  }, [layoutImagePrompt]);
 
   useEffect(() => {
     const nextSelected = Array.isArray(analysisData?.selectedSourceTableIds)
@@ -673,20 +585,20 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRebuil
   );
 
   const handleSaveAndRegenerate = useCallback(async () => {
-    const normalizedPrompt = promptDraft.trim() || DEFAULT_LAYOUT_SYSTEM_PROMPT;
-    setLayoutSystemPrompt(normalizedPrompt);
+    const normalizedPrompt = promptDraft.trim() || DEFAULT_LAYOUT_IMAGE_PROMPT;
+    setLayoutImagePrompt(normalizedPrompt);
 
-    if (!sessionId || !onRebuildLayoutPlans) {
+    if (!sessionId || !onRegenerateLayoutImages) {
       return;
     }
 
     setIsSubmittingPrompt(true);
     try {
-      await onRebuildLayoutPlans(normalizedPrompt);
+      await onRegenerateLayoutImages(normalizedPrompt);
     } finally {
       setIsSubmittingPrompt(false);
     }
-  }, [onRebuildLayoutPlans, promptDraft, sessionId, setLayoutSystemPrompt]);
+  }, [onRegenerateLayoutImages, promptDraft, sessionId, setLayoutImagePrompt]);
 
   useEffect(() => {
     if (previewMode !== "image" || !analysisData || analysisData.status === "pending" || candidates.length === 0) {
@@ -785,181 +697,73 @@ export function LayoutPlanPanel({ sessionId, analysisData, isAnalyzing, onRebuil
     return <div className="flex h-full items-center justify-center bg-white px-6 text-center text-sm text-gray-500">현재 세션에는 계산된 레이아웃이 없습니다.</div>;
   }
 
+  const candidateItems: LayoutPlanCandidateListItem[] = candidates.map((candidate, index) => {
+    const candidateName = candidate.name || `시안 ${index + 1}`;
+    const roleTagCount = candidate.sections.filter((section) => Boolean(getSectionRolePresentation(section.sectionRole))).length;
+
+    return {
+      id: candidate.id,
+      index,
+      name: candidateName,
+      description: candidate.description || "대시보드 시안",
+      isSelected: selectedPlan.id === candidate.id,
+      isGeneratingPreview: activePreviewId === candidate.id && !candidate.previewImageDataUrl,
+      layoutIntentLabel: getLayoutIntentPresentation(candidate.layoutIntent),
+      chartSectionCount: candidate.sections.filter((section) => section.type === "chart-group").length,
+      roleTagCount,
+      onSelect: () => {
+        void selectCandidate(candidate);
+      },
+      preview: (
+        <LayoutPlanPreview
+          previewMode={previewMode}
+          candidateName={candidateName}
+          previewImageDataUrl={candidate.previewImageDataUrl}
+          htmlPreview={(
+            <LayoutHtmlPreview
+              plan={candidate}
+              analysisData={analysisData}
+              previewDataContext={previewDataContext}
+              compact
+              editable={false}
+            />
+          )}
+          fallbackPreview={<VisualDraftBoard plan={candidate} analysisData={analysisData} compact />}
+        />
+      ),
+    };
+  });
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-4 py-4 md:px-5 md:py-5">
         <div className="space-y-4">
-          <section className="rounded-[28px] border border-gray-200/80 bg-white p-4 shadow-sm md:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Image Direction</p>
-                <h3 className="mt-1 text-sm font-semibold text-gray-900">이미지 생성 보조 지침</h3>
-                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">레이아웃 구조는 앱이 분석 결과로 자동 계산합니다. 아래 지침은 인포그래픽 이미지 생성 시 연출 방향을 보강할 때 사용됩니다.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPromptDraft(DEFAULT_LAYOUT_SYSTEM_PROMPT)}
-                  className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-medium text-gray-600 transition-colors hover:border-gray-300 hover:text-gray-800"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" /> 기본값
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleSaveAndRegenerate();
-                  }}
-                  disabled={isSubmittingPrompt || isAnalyzing}
-                  className="inline-flex items-center rounded-full border border-blue-600 bg-blue-600 px-3 py-1.5 text-[11px] font-medium text-white shadow-sm transition-colors hover:bg-blue-700"
-                >
-                  {isSubmittingPrompt || isAnalyzing ? "다시 계산 중..." : "저장 후 다시 계산"}
-                </button>
-              </div>
-            </div>
+          <LayoutPlanControls
+            promptDraft={promptDraft}
+            isSubmittingPrompt={isSubmittingPrompt}
+            isAnalyzing={isAnalyzing}
+            sourceTables={sourceTables}
+            selectedSourceTableIds={selectedSourceTableIds}
+            onPromptDraftChange={setPromptDraft}
+            onResetPrompt={() => setPromptDraft(DEFAULT_LAYOUT_IMAGE_PROMPT)}
+            onSaveAndRegenerate={() => {
+              void handleSaveAndRegenerate();
+            }}
+            onToggleSourceTableSelection={(tableId) => {
+              void toggleSourceTableSelection(tableId);
+            }}
+          />
 
-            <textarea
-              value={promptDraft}
-              onChange={(event) => setPromptDraft(event.target.value)}
-              rows={3}
-              placeholder="이미지 생성 시 추가로 반영할 연출 지침을 입력하세요"
-              className="mt-4 min-h-[96px] w-full resize-y rounded-2xl border border-gray-200 bg-gray-50/70 px-4 py-3 text-[12.5px] leading-relaxed text-gray-700 outline-none transition-colors placeholder:text-gray-400 focus:border-blue-500 focus:bg-white"
-            />
-
-            {sourceTables.length > 0 && (
-              <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50/60 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Source Tables</p>
-                    <p className="mt-1 text-[12px] leading-relaxed text-gray-600">선택한 표는 저장되며, 다시 계산할 때 레이아웃과 이미지 문맥에 우선 반영됩니다.</p>
-                  </div>
-                  <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[10.5px] font-medium text-gray-500">{selectedSourceTableIds.length}개 선택</span>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {sourceTables.map((table) => {
-                    const selected = selectedSourceTableIds.includes(table.id);
-                    return (
-                      <button
-                        key={table.id}
-                        type="button"
-                        onClick={() => {
-                          void toggleSourceTableSelection(table.id);
-                        }}
-                        className={`rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors ${selected ? "border-blue-300 bg-blue-50 text-blue-700" : "border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:text-gray-800"}`}
-                      >
-                        {table.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </section>
-
-          <section className="rounded-[28px] border border-gray-200/80 bg-white p-4 shadow-sm md:p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-gray-400">Layout Plan</p>
-                <h3 className="mt-1 text-sm font-semibold text-gray-900">앱 계산 레이아웃</h3>
-                <p className="mt-1 text-[12px] leading-relaxed text-gray-500">HTML 모드에서는 앱이 계산한 layoutPlan의 제목·설명·sections를 읽기 전용으로 렌더링합니다. 이미지 모드에서는 같은 계획을 바탕으로 Gemini 미리보기를 생성합니다.</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="inline-flex items-center rounded-xl border border-gray-200/80 bg-gray-100/80 p-1 shadow-sm shadow-gray-100/80">
-                  {([
-                    { id: "html", label: "HTML" },
-                    { id: "image", label: "이미지" },
-                  ] as const).map((mode) => (
-                    <button
-                      key={mode.id}
-                      type="button"
-                      onClick={() => {
-                        if (mode.id === "image" && previewMode === "image") {
-                          setPreviewRetryNonce((value) => value + 1);
-                        }
-                        setPreviewMode(mode.id);
-                      }}
-                      className={`rounded-lg px-3 py-1.5 text-[11px] font-semibold transition-colors ${
-                        previewMode === mode.id ? "bg-white text-gray-900 shadow-sm shadow-gray-200/80" : "text-gray-500 hover:text-gray-700"
-                      }`}
-                    >
-                      {mode.label}
-                    </button>
-                  ))}
-                </div>
-                <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10.5px] font-medium text-gray-500">{candidates.length}개 시안</span>
-              </div>
-            </div>
-
-            <div className="mt-4 grid gap-4">
-              {candidates.map((candidate, index) => {
-                const isSelected = selectedPlan.id === candidate.id;
-                const isGeneratingPreview = activePreviewId === candidate.id && !candidate.previewImageDataUrl;
-                return (
-                  <div
-                    key={candidate.id}
-                    onClick={() => {
-                      void selectCandidate(candidate);
-                    }}
-                    className={`rounded-[28px] border p-4 text-left transition-all md:p-5 ${
-                      isSelected ? "border-slate-300 bg-slate-50 shadow-sm shadow-slate-200/70" : "border-gray-200 bg-white hover:border-gray-300"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-[11px] font-semibold text-gray-500">안 {index + 1}</p>
-                        <p className="mt-1 text-sm font-semibold text-gray-900">{candidate.name || `시안 ${index + 1}`}</p>
-                      </div>
-                      {getLayoutIntentPresentation(candidate.layoutIntent) && (
-                        <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[10px] font-medium text-violet-700">
-                          {getLayoutIntentPresentation(candidate.layoutIntent)}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-2 text-[12px] leading-relaxed text-gray-500">{candidate.description || "대시보드 시안"}</p>
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <div className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] font-medium text-gray-500">
-                        {candidate.sections.filter((section) => section.type === "chart-group").length}개 차트 섹션
-                      </div>
-                      {candidate.sections.some((section) => Boolean(getSectionRolePresentation(section.sectionRole))) && (
-                        <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[10px] font-medium text-slate-500">
-                          {candidate.sections.filter((section) => Boolean(getSectionRolePresentation(section.sectionRole))).length}개 role 태그
-                        </div>
-                      )}
-                      {isGeneratingPreview && (
-                        <div className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-medium text-blue-600">
-                          이미지 미리보기 생성 중
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="mt-4 overflow-hidden rounded-[24px] border border-gray-200 bg-[#f7f8fb] p-3 shadow-inner md:p-4">
-                      {previewMode === "html" ? (
-                        <LayoutHtmlPreview
-                          plan={candidate}
-                          analysisData={analysisData}
-                          previewDataContext={previewDataContext}
-                          compact
-                          editable={false}
-                        />
-                      ) : candidate.previewImageDataUrl ? (
-                        <div className="overflow-hidden rounded-[18px] border border-gray-200 bg-white shadow-sm">
-                          <Image
-                            src={candidate.previewImageDataUrl}
-                            alt={`${candidate.name || `시안 ${index + 1}`} 미리보기`}
-                            width={1600}
-                            height={1200}
-                            unoptimized
-                            className="h-auto w-full bg-white object-contain"
-                          />
-                        </div>
-                      ) : (
-                        <VisualDraftBoard plan={candidate} analysisData={analysisData} compact />
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
+          <LayoutPlanCandidates
+            previewMode={previewMode}
+            candidates={candidateItems}
+            onPreviewModeSelect={(mode) => {
+              if (mode === "image" && previewMode === "image") {
+                setPreviewRetryNonce((value) => value + 1);
+              }
+              setPreviewMode(mode);
+            }}
+          />
         </div>
       </div>
     </div>
@@ -1669,18 +1473,6 @@ function buildEditableKpiItems(section: LayoutSection, registry: PreviewDataRegi
     label: label.trim() || "지표",
     value: value.trim() || "-",
   }));
-}
-
-function ensureSectionItems(section: LayoutSection, registry: PreviewDataRegistry): LayoutSection {
-  if (section.type !== "kpi-group") {
-    return section;
-  }
-
-  const nextItems = section.items && section.items.length > 0 ? section.items : buildEditableKpiItems(section, registry);
-  return {
-    ...section,
-    items: nextItems,
-  };
 }
 
 function resolveLayoutTree(plan: LayoutPlan): LayoutBlockTree {
